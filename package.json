@@ -1,0 +1,18 @@
+{
+  "name": "ice-riot",
+  "version": "0.1.0",
+  "description": "ICE RIOT - original 3-on-3 arcade hockey for the browser, multiplayer over a Tailscale tailnet",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server/server.js",
+    "serve": "node server/server.js --serve",
+    "test": "node test/run-all.js",
+    "test:all": "node test/run-all.js --slow",
+    "e2e": "node test/e2e.js",
+    "bots": "node test/bots.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

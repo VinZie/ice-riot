@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#070b16">
+<title>ICE RIOT - touch controls test</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(ellipse at 50% 120%, rgba(60,120,200,.22), transparent 60%),
+      radial-gradient(ellipse at 50% -20%, rgba(255,72,92,.10), transparent 55%),
+      #070b16;
+    color: #e8f0ff;
+    font-family: "Avenir Next Condensed", "Bahnschrift", "Roboto Condensed", "sans-serif-condensed", "Arial Narrow", system-ui, sans-serif;
+    font-stretch: 75%;
+  }
+  #panel {
+    position: fixed; z-index: 60; left: 50%; transform: translateX(-50%);
+    top: calc(env(safe-area-inset-top, 0px) + 10px);
+    width: min(372px, calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+    box-sizing: border-box; padding: 10px 12px 12px;
+    background: rgba(12,18,34,.78); border: 3px solid rgba(255,255,255,.85); border-radius: 14px;
+    box-shadow: 0 0 0 2px rgba(0,0,0,.6), 0 10px 30px rgba(0,0,0,.5);
+  }
+  .title { font-weight: 900; font-style: italic; font-size: 22px; letter-spacing: .03em; line-height: 1;
+           text-shadow: 0 2px 0 #000; display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+  .title b { color: #ff485c; }
+  .title span { font-size: 13px; font-style: normal; letter-spacing: .14em; opacity: .75; }
+  .grid { display: grid; grid-template-columns: 168px 1fr; gap: 10px; align-items: center; }
+  #rink { width: 168px; height: 73px; display: block; }
+  #out { margin: 0; font: 600 13px/1.35 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre; }
+  .bits { display: flex; gap: 6px; margin: 8px 0; }
+  .bit { flex: 1; text-align: center; font-weight: 900; font-style: italic; font-size: 14px; padding: 4px 0;
+         border-radius: 7px; border: 2px solid rgba(255,255,255,.35); color: rgba(255,255,255,.5); }
+  .bit.on { color: #fff; border-color: #fff; background: rgb(var(--c)); text-shadow: 0 1px 0 #000;
+            box-shadow: 0 0 12px rgba(var(--c),.8); }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row + .row { margin-top: 8px; }
+  button.tg {
+    flex: 1; font: inherit; font-weight: 900; font-style: italic; font-size: 14px; letter-spacing: .03em;
+    color: #fff; background: rgba(255,255,255,.08); border: 2px solid rgba(255,255,255,.6); border-radius: 8px;
+    padding: 7px 4px; text-shadow: 0 1px 0 #000; touch-action: manipulation;
+  }
+  button.tg.on { background: rgba(56,214,255,.35); border-color: #fff; }
+  label { font-weight: 800; font-size: 14px; letter-spacing: .06em; display: flex; align-items: center; gap: 6px; }
+  input[type=range] { flex: 1; accent-color: #ffd640; min-width: 0; }
+  .note { font-size: 12px; opacity: .7; margin-top: 6px; letter-spacing: .03em; }
+  .note:empty { display: none; }
+  @media (orientation: portrait) {
+    .grid { grid-template-columns: 1fr; }
+    #rink { width: 100%; height: auto; aspect-ratio: 60 / 26; }
+  }
+</style>
+</head>
+<body>
+<div id="panel" data-ir-touch-allow>
+  <div class="title"><div><b>ICE</b> RIOT</div><span id="vp">TOUCH TEST</span></div>
+  <div class="grid">
+    <canvas id="rink"></canvas>
+    <pre id="out">waiting...</pre>
+  </div>
+  <div class="bits">
+    <div class="bit" data-bit="1" style="--c:255,72,92">SHOOT</div>
+    <div class="bit" data-bit="2" style="--c:56,214,255">PASS</div>
+    <div class="bit" data-bit="4" style="--c:255,201,60">ACTION</div>
+    <div class="bit" data-bit="8" style="--c:186,128,255">TURBO</div>
+  </div>
+  <div class="row">
+    <button class="tg" id="puck">HAS PUCK: NO</button>
+    <button class="tg" id="auto">AUTO TURBO: OFF</button>
+    <button class="tg" id="vis">HIDE</button>
+  </div>
+  <div class="row">
+    <label>CHARGE <input id="charge" type="range" min="0" max="1" step="0.01" value="0"></label>
+    <label><input id="simCharge" type="checkbox" checked> SIM</label>
+  </div>
+  <div class="note" id="note"></div>
+</div>
+
+<script type="module">
+import { BTN, RINK, clamp } from '/shared/constants.js';
+import { createTouchControls, isTouchDevice } from '/touch.js';
+
+const q = new URLSearchParams(location.search);
+const force = q.get('force') === '1';
+const demo = +(q.get('demo') || 0);
+const $ = (id) => document.getElementById(id);
+
+let hasPuck = demo === 1;
+let autoTurbo = q.get('auto') === '1' || demo === 2;
+let visible = force || isTouchDevice();
+let charge = 0;
+let tc = null;
+
+function build() {
+  tc?.dispose();
+  tc = createTouchControls(document.body, { autoTurbo, mouse: force, visible, hasPuck });
+  tc.setCharge(charge);
+}
+build();
+
+if (!visible) {
+  $('note').textContent = 'Not detected as a touch device - add ?force=1 to show the controls (mouse works then). They also appear on the first touch.';
+  addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'touch' && !visible) { visible = true; tc.setVisible(true); $('note').textContent = ''; syncUi(); }
+  });
+}
+
+function syncUi() {
+  $('puck').textContent = `HAS PUCK: ${hasPuck ? 'YES' : 'NO'}`;
+  $('puck').classList.toggle('on', hasPuck);
+  $('auto').textContent = `AUTO TURBO: ${autoTurbo ? 'ON' : 'OFF'}`;
+  $('auto').classList.toggle('on', autoTurbo);
+  $('vis').textContent = visible ? 'HIDE' : 'SHOW';
+}
+syncUi();
+
+$('puck').onclick = () => { hasPuck = !hasPuck; tc.setContext({ hasPuck }); syncUi(); };
+$('auto').onclick = () => { autoTurbo = !autoTurbo; build(); syncUi(); }; // also exercises dispose()
+$('vis').onclick = () => { visible = !visible; tc.setVisible(visible); syncUi(); };
+$('charge').oninput = (e) => { $('simCharge').checked = false; charge = +e.target.value; tc.setCharge(charge); };
+
+// ---- mini rink with a dot driven by the stick ----
+const cv = $('rink'), g = cv.getContext('2d');
+const dot = { x: 0, z: 0 }, trail = [];
+function sizeCanvas() {
+  const r = cv.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
+  cv.width = Math.max(1, Math.round(r.width * dpr)); cv.height = Math.max(1, Math.round(r.height * dpr));
+}
+addEventListener('resize', sizeCanvas);
+sizeCanvas();
+
+function drawRink(inp) {
+  const W = cv.width, H = cv.height, pad = 4 * (W / cv.clientWidth || 1);
+  const sx = (W - pad * 2) / (RINK.halfLength * 2), sz = (H - pad * 2) / (RINK.halfWidth * 2);
+  const X = (x) => pad + (x + RINK.halfLength) * sx, Z = (z) => pad + (z + RINK.halfWidth) * sz;
+  g.clearRect(0, 0, W, H);
+  g.lineWidth = Math.max(1.5, W / 120);
+  g.fillStyle = 'rgba(220,236,255,.12)'; g.strokeStyle = 'rgba(255,255,255,.85)';
+  g.beginPath(); g.roundRect(X(-30), Z(-13), 60 * sx, 26 * sz, RINK.cornerRadius * sx); g.fill(); g.stroke();
+  const vline = (x, c) => { g.strokeStyle = c; g.beginPath(); g.moveTo(X(x), Z(-13)); g.lineTo(X(x), Z(13)); g.stroke(); };
+  vline(0, 'rgba(255,72,92,.8)'); vline(-RINK.blueLineX, 'rgba(56,150,255,.8)'); vline(RINK.blueLineX, 'rgba(56,150,255,.8)');
+  g.strokeStyle = 'rgba(255,72,92,.5)';
+  g.beginPath(); g.arc(X(0), Z(0), RINK.centerCircleR * sx, 0, Math.PI * 2); g.stroke();
+  // trail + dot
+  const turbo = inp.b & BTN.TURBO;
+  g.strokeStyle = turbo ? 'rgba(186,128,255,.9)' : 'rgba(120,225,255,.7)';
+  g.beginPath(); trail.forEach((p, i) => (i ? g.lineTo(X(p.x), Z(p.z)) : g.moveTo(X(p.x), Z(p.z)))); g.stroke();
+  const rr = Math.max(4, W / 40);
+  g.fillStyle = turbo ? '#ba80ff' : (inp.b & BTN.SHOOT ? '#ff485c' : '#fff');
+  g.strokeStyle = '#000'; g.lineWidth = Math.max(1.5, W / 160);
+  g.beginPath(); g.arc(X(dot.x), Z(dot.z), rr, 0, Math.PI * 2); g.fill(); g.stroke();
+  // stick vector arrow from the dot
+  if (inp.mx || inp.mz) {
+    g.strokeStyle = '#ffd640'; g.lineWidth = Math.max(2, W / 110);
+    g.beginPath(); g.moveTo(X(dot.x), Z(dot.z)); g.lineTo(X(dot.x + inp.mx * 8), Z(dot.z + inp.mz * 8)); g.stroke();
+  }
+}
+
+const sign = (v) => (v < 0 ? '-' : '+') + Math.abs(v).toFixed(3);
+let last = performance.now();
+function frame(t) {
+  const dt = Math.min(0.05, (t - last) / 1000); last = t;
+  const inp = tc.poll();
+  // fake "game": the dot skates, turbo is faster; SIM charge rises while SHOOT is held with the puck
+  const spd = inp.b & BTN.TURBO ? 14 : 8;
+  dot.x = clamp(dot.x + inp.mx * spd * dt, -RINK.halfLength + 1, RINK.halfLength - 1);
+  dot.z = clamp(dot.z + inp.mz * spd * dt, -RINK.halfWidth + 1, RINK.halfWidth - 1);
+  trail.push({ x: dot.x, z: dot.z }); if (trail.length > 40) trail.shift();
+  if ($('simCharge').checked) {
+    charge = hasPuck && (inp.b & BTN.SHOOT) ? Math.min(1, charge + dt / 1.1) : 0;
+    tc.setCharge(charge);
+    $('charge').value = String(charge);
+  }
+  drawRink(inp);
+  const mag = Math.hypot(inp.mx, inp.mz);
+  $('out').textContent =
+    `mx ${sign(inp.mx)}  mz ${sign(inp.mz)}\n` +
+    `|v| ${mag.toFixed(3)}  b ${inp.b.toString(2).padStart(4, '0')} (${inp.b})\n` +
+    `ctx ${hasPuck ? 'PUCK' : 'D'}  charge ${charge.toFixed(2)}\n` +
+    `dot ${dot.x.toFixed(1)}, ${dot.z.toFixed(1)}`;
+  $('vp').textContent = `TOUCH TEST · ${innerWidth}x${innerHeight}`;
+  for (const el of document.querySelectorAll('.bit')) el.classList.toggle('on', !!(inp.b & +el.dataset.bit));
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---- ?demo=1|2 : synthetic multi-touch so a headless screenshot shows the active state ----
+function fire(target, type, id, x, y) {
+  target.dispatchEvent(new PointerEvent(type, {
+    pointerId: id, pointerType: 'touch', clientX: x, clientY: y, isPrimary: id === 11,
+    bubbles: true, cancelable: true, button: type === 'pointermove' ? -1 : 0, buttons: 1,
+  }));
+}
+if (demo && visible) {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const root = tc.el;
+    const zone = root.querySelector('.ir-touch-stickzone');
+    const bz = root.querySelector('.ir-touch-btnzone');
+    const ring = root.querySelector('.ir-touch-stick').getBoundingClientRect();
+    const r = ring.width / 2, cx = ring.left + r, cy = ring.top + r;
+    fire(zone, 'pointerdown', 11, cx + 6, cy - 10);
+    const [ax, ay] = demo === 2 ? [r * 1.6, -r * 0.2] : [r * 0.62, -r * 0.48];
+    fire(zone, 'pointermove', 11, cx + 6 + ax, cy - 10 + ay);
+    const target = root.querySelector(demo === 2 ? '.ir-touch-b-deke' : '.ir-touch-b-shoot').getBoundingClientRect();
+    fire(bz, 'pointerdown', 12, target.left + target.width / 2 + 4, target.top + target.height / 2 + 3);
+    if (demo === 1) { $('simCharge').checked = false; charge = 0.62; tc.setCharge(charge); $('charge').value = '0.62'; }
+  }));
+}
+</script>
+</body>
+</html>

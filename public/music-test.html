@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICE RIOT music test</title>
+<style>
+  :root { --bg: #0c1220; --panel: #151d31; --line: #26314d; --text: #e7edf8; --dim: #8d9bb8; --acc: #3fd0ff; --hot: #ff6a3d; --ok: #57e38d; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 20px; letter-spacing: 0.08em; margin: 0 0 4px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--dim); margin: 0 0 8px; font-weight: 600; }
+  p { margin: 0 0 12px; color: var(--dim); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 0 0 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button { font: inherit; color: var(--text); background: #1f2a45; border: 1px solid var(--line); border-radius: 7px; padding: 7px 12px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--acc); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.on { background: var(--acc); color: #04121c; border-color: var(--acc); }
+  button.sting { border-color: #4a3326; }
+  #start { background: var(--hot); color: #1b0700; border-color: var(--hot); font-weight: 700; }
+  input[type=range] { width: min(320px, 60vw); accent-color: var(--acc); }
+  .pos { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+  .pos div { background: #10182a; border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; }
+  .pos b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .pos span { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.1em; }
+  .beats { display: flex; gap: 8px; margin-top: 10px; }
+  .beats i { width: 22px; height: 22px; border-radius: 50%; background: #1b2440; border: 1px solid var(--line); }
+  .beats i.lit { background: var(--acc); }
+  .beats i.lit.one { background: var(--hot); }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.4 ui-monospace, Consolas, monospace; color: var(--dim); }
+  #errors { color: var(--hot); }
+  #errors:empty::before { content: "no errors"; color: var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <h1>ICE RIOT music test</h1>
+  <p>Synthesized music bus (public/music.js). Click start, then pick moods and stingers. Changes land on the next beat or bar.</p>
+
+  <section>
+    <div class="row">
+      <button id="start">Start audio</button>
+      <label class="row">Volume <input id="vol" type="range" min="0" max="1" step="0.01" value="0.7"> <span id="volv">0.70</span></label>
+    </div>
+    <p id="status" style="margin:8px 0 0">loading module...</p>
+  </section>
+
+  <section>
+    <h2>Mood</h2>
+    <div class="row" id="moods"></div>
+  </section>
+
+  <section>
+    <h2>Stingers</h2>
+    <div class="row" id="stingers"></div>
+  </section>
+
+  <section>
+    <h2>Position</h2>
+    <div class="pos">
+      <div><span>mood</span><b id="p-mood">-</b></div>
+      <div><span>pending</span><b id="p-pend">-</b></div>
+      <div><span>bar.beat</span><b id="p-bb">-</b></div>
+      <div><span>bpm</span><b id="p-bpm">-</b></div>
+      <div><span>voices</span><b id="p-voices">-</b></div>
+    </div>
+    <div class="beats" id="beats"><i></i><i></i><i></i><i></i></div>
+  </section>
+
+  <section>
+    <h2>Errors</h2>
+    <pre id="errors"></pre>
+  </section>
+
+  <section>
+    <h2>Log</h2>
+    <pre id="log"></pre>
+  </section>
+</main>
+
+<script>
+  // Surface every error into the DOM (also catches module load / parse errors).
+  (function () {
+    const box = () => document.getElementById('errors');
+    window.__errors = [];
+    function report(msg) {
+      window.__errors.push(String(msg));
+      document.documentElement.dataset.errors = String(window.__errors.length);
+      if (box()) box().textContent += String(msg) + '\n';
+    }
+    window.__report = report;
+    window.addEventListener('error', (e) => report('error: ' + (e.message || e) + (e.filename ? ' @ ' + e.filename + ':' + e.lineno : '')), true);
+    window.addEventListener('unhandledrejection', (e) => report('unhandled rejection: ' + (e.reason && e.reason.stack || e.reason)));
+    setTimeout(() => { if (!window.__musicLoaded) report('music.js module did not load'); }, 2000);
+  })();
+</script>
+
+<script type="module">
+  import { createMusic } from './music.js';
+  window.__musicLoaded = true;
+
+  const MOODS = ['lobby', 'play', 'stoppage', 'goal', 'intermission', 'final', 'off'];
+  const STINGERS = ['goal', 'bighit', 'onfire', 'periodStart', 'win'];
+  const $ = (id) => document.getElementById(id);
+  const log = (s) => { $('log').textContent += s + '\n'; };
+  let ctx = null, music = null;
+
+  for (const m of MOODS) {
+    const b = document.createElement('button');
+    b.textContent = m; b.dataset.mood = m; b.disabled = true;
+    b.onclick = () => { music.setMood(m); log('setMood(' + m + ')'); };
+    $('moods').appendChild(b);
+  }
+  for (const k of STINGERS) {
+    const b = document.createElement('button');
+    b.textContent = k; b.className = 'sting'; b.disabled = true;
+    b.onclick = () => { music.stinger(k); log('stinger(' + k + ')'); };
+    $('stingers').appendChild(b);
+  }
+  $('vol').oninput = () => {
+    const v = +$('vol').value;
+    $('volv').textContent = v.toFixed(2);
+    if (music) music.setVolume(v);
+  };
+  $('status').textContent = 'module loaded - press "Start audio"';
+
+  $('start').onclick = async () => {
+    try {
+      if (!ctx) {
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        music = createMusic(ctx, ctx.destination);
+        music.setVolume(+$('vol').value);
+        document.querySelectorAll('button[disabled]').forEach((b) => { b.disabled = false; });
+        music.setMood('lobby');
+        requestAnimationFrame(draw);
+      }
+      await ctx.resume();
+      $('start').textContent = 'Audio running';
+      $('status').textContent = 'AudioContext ' + ctx.state + ', ' + ctx.sampleRate + ' Hz';
+    } catch (e) { window.__report('start failed: ' + (e.stack || e)); }
+  };
+
+  function draw() {
+    if (!music) return;
+    const s = music.getState();
+    $('p-mood').textContent = s.mood;
+    $('p-pend').textContent = s.pending || '-';
+    $('p-bb').textContent = s.mood === 'silent' ? '-' : s.bar + '.' + s.beat;
+    $('p-bpm').textContent = s.bpm || '-';
+    $('p-voices').textContent = s.voices;
+    document.querySelectorAll('#moods button').forEach((b) => b.classList.toggle('on', b.dataset.mood === s.mood || (s.mood === 'silent' && b.dataset.mood === 'off')));
+    [...$('beats').children].forEach((el, i) => { el.classList.toggle('lit', s.mood !== 'silent' && s.beat === i + 1); el.classList.toggle('one', i === 0); });
+    requestAnimationFrame(draw);
+  }
+
+  // ---- ?autotest=1 : headless self-check (no audio output needed)
+  // Drives music.js against a real OfflineAudioContext (so the browser's own WebAudio argument
+  // validation runs on every node/param call). The scheduler's interval is captured and invoked
+  // from offline suspend() points every 50 ms of rendered time, so ctx.currentTime is the real
+  // render clock. Renders, then summarizes level per second. Also smoke-tests a live context.
+  async function autotest() {
+    const out = document.createElement('pre');
+    out.id = 'autotest';
+    document.querySelector('main').appendChild(out);
+    const say = (s) => { out.textContent += s + '\n'; };
+    try {
+      const SR = 22050, DUR = 44, STEP = 0.05;
+      const off = new OfflineAudioContext(1, SR * DUR, SR);
+      const realSI = window.setInterval;
+      let tick = null;
+      window.setInterval = (fn) => { tick = fn; return -1; };
+      let m;
+      try { m = createMusic(off, off.destination); } finally { window.setInterval = realSI; }
+      if (typeof tick !== 'function') throw new Error('scheduler interval not captured');
+      const plan = [
+        [0.1, 'mood', 'lobby'], [4.0, 'sting', 'bighit'], [6.0, 'mood', 'play'], [8.0, 'sting', 'onfire'],
+        [10.0, 'mood', 'stoppage'], [12.0, 'sting', 'periodStart'], [13.0, 'mood', 'goal'], [19.5, 'mood', 'play'],
+        [21.0, 'mood', 'intermission'], [25.0, 'sting', 'goal'], [26.0, 'mood', 'final'], [26.2, 'sting', 'win'],
+        [37.0, 'mood', 'lobby'], [40.0, 'sting', 'win'], [41.5, 'mood', 'off'],
+      ];
+      const seen = [];
+      let fault = null;
+      const onSuspend = () => {
+        try {
+          const now = off.currentTime;
+          while (plan.length && plan[0][0] <= now) {
+            const [, kind, arg] = plan.shift();
+            if (kind === 'mood') m.setMood(arg); else m.stinger(arg);
+          }
+          tick();
+          const s = m.getState();
+          if (!seen.length || seen[seen.length - 1] !== s.mood) seen.push(s.mood);
+        } catch (e) { fault = fault || e; }
+        off.resume();
+      };
+      tick();
+      for (let k = 1; k * STEP < DUR - 0.2; k++) off.suspend(k * STEP).then(onSuspend);
+      const t0 = performance.now();
+      const buf = await off.startRendering();
+      if (fault) throw fault;
+      say('offline moods: ' + seen.join(' > '));
+      const d = buf.getChannelData(0);
+      let peak = 0, nan = 0, sum = 0;
+      const perSec = [];
+      for (let i = 0; i < d.length; i++) {
+        const x = d[i];
+        if (!Number.isFinite(x)) { nan++; continue; }
+        const a = Math.abs(x);
+        if (a > peak) peak = a;
+        sum += x * x;
+        const sec = (i / SR) | 0;
+        perSec[sec] = (perSec[sec] || 0) + x * x;
+      }
+      const rmsDb = (v, n) => (v > 0 ? (10 * Math.log10(v / n)).toFixed(0) : '-inf');
+      say('rendered ' + DUR + ' s in ' + (performance.now() - t0).toFixed(0) + ' ms');
+      say('peak ' + peak.toFixed(3) + '  rms ' + rmsDb(sum, d.length) + ' dBFS  non-finite samples ' + nan);
+      say('rms per second (dBFS): ' + perSec.map((v) => rmsDb(v, SR)).join(' '));
+      m.dispose();
+
+      // live context smoke test (may stay suspended without a gesture; must not throw)
+      const live = new AudioContext();
+      const lm = createMusic(live, live.destination);
+      lm.setMood('lobby'); lm.stinger('bighit'); lm.setVolume(0.5); lm.setMood('play');
+      say('live AudioContext: ' + live.state + ', state ' + JSON.stringify(lm.getState()));
+      lm.dispose();
+      setTimeout(() => live.close(), 600);
+      const loud = (sec) => perSec[sec] > 0 && 10 * Math.log10(perSec[sec] / SR) > -50;
+      const grooveAudible = [1, 2, 3, 7, 11].every(loud);   // lobby, play, stoppage seconds
+      say('grooves audible: ' + grooveAudible);
+      document.documentElement.dataset.autotest = nan === 0 && peak > 0.01 && peak < 1 && grooveAudible ? 'pass' : 'fail';
+    } catch (e) {
+      window.__report('autotest: ' + (e.stack || e));
+      document.documentElement.dataset.autotest = 'fail';
+    }
+    document.documentElement.dataset.autotestDone = '1';
+  }
+  if (new URLSearchParams(location.search).has('autotest')) autotest();
+</script>
+</body>
+</html>

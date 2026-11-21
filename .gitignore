@@ -1,0 +1,14 @@
+# runtime data (career stats / leaderboard written by the server)
+data/
+
+# dependencies / tooling
+node_modules/
+*.log
+.env
+deploy/.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

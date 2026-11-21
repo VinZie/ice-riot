@@ -1,0 +1,62 @@
+# ICE RIOT on your tailnet, via an official Tailscale sidecar container.
+# The game appears as its own tailnet machine "ice-riot":  https://ice-riot.<your-tailnet>.ts.net
+#
+# One-time, in the Tailscale admin console (https://login.tailscale.com/admin):
+#   - DNS page: enable MagicDNS and HTTPS Certificates.
+#   - Settings > Keys: generate an auth key (tick "Pre-approved" if device approval is on).
+# Then, from the repo root:
+#   export TS_AUTHKEY=tskey-auth-...          # or put TS_AUTHKEY=... in deploy/.env (never commit it)
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#   docker compose -f deploy/docker-compose.yml logs -f tailscale
+#
+# Tailnet-only: serve.json keeps Funnel off and no port is published on the Docker host.
+# The node identity lives in the "tailscale-state" volume, so the key is only needed for the
+# first start; `down -v` deletes that volume (the machine then needs a fresh key).
+
+name: ice-riot
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest      # pin a version tag (e.g. v1.xx.y) for reproducible deploys
+    hostname: ice-riot
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:-}          # empty: the login URL is printed in `logs tailscale`
+      TS_AUTH_ONCE: "true"                 # log in only when there is no saved state (one-off keys keep working)
+      TS_HOSTNAME: ice-riot
+      TS_STATE_DIR: /var/lib/tailscale     # must persist, or every restart creates a new machine
+      TS_SERVE_CONFIG: /config/serve.json  # ${TS_CERT_DOMAIN} inside it is filled in by the container
+      TS_USERSPACE: "true"                 # the image default; no /dev/net/tun or NET_ADMIN needed
+      TS_EXTRA_ARGS: ${TS_EXTRA_ARGS:-}    # e.g. --advertise-tags=tag:ice-riot (required with OAuth client secrets)
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      # Single-file mount: after editing serve.json run `docker compose restart tailscale`.
+      # (Live reload needs a directory mount, which would also expose deploy/.env to the container.)
+      - ./serve.json:/config/serve.json:ro
+    restart: unless-stopped
+
+  game:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ice-riot:local
+    network_mode: service:tailscale        # share the sidecar's network: Serve reaches us on 127.0.0.1:8765
+    depends_on:
+      - tailscale
+    environment:
+      PORT: "8765"                         # must match the Proxy port in serve.json
+    command: ["node", "server/server.js", "--host", "127.0.0.1"]
+    init: true                             # forwards SIGTERM so `docker compose down` stops promptly
+    read_only: true                        # only /app/data (volume) and /tmp (tmpfs) are writable
+    volumes:
+      - ice-riot-data:/app/data            # career stats survive rebuilds
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  tailscale-state:
+  ice-riot-data:

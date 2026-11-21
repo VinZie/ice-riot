@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICE RIOT - logo gallery</title>
+<style>
+  :root { --dark: #0d1117; --dark2: #161b24; --light: #eef3f8; --light2: #ffffff; --line: #2a3242; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #080b10; color: #d7dde8; font: 13px/1.4 system-ui, sans-serif; }
+  header { display: flex; gap: 16px; align-items: center; padding: 14px 18px; flex-wrap: wrap; }
+  header .wm { padding: 10px 14px; border-radius: 10px; }
+  header .wm.dark { background: var(--dark2); }
+  header .wm.light { background: var(--light2); }
+  .fav { display: flex; gap: 10px; align-items: end; padding: 10px 14px; background: var(--dark2); border-radius: 10px; }
+  .fav img { image-rendering: auto; display: block; }
+  .fav span { font-size: 11px; color: #8a93a6; }
+  h2 { margin: 0; padding: 10px 18px 6px; font-size: 14px; letter-spacing: .08em; text-transform: uppercase; color: #8a93a6; }
+  .panel { margin: 0 18px 14px; border-radius: 12px; padding: 10px 12px; overflow-x: auto; }
+  .panel.dark { background: var(--dark); border: 1px solid var(--line); }
+  .panel.light { background: var(--light); color: #1b2333; }
+  table { border-collapse: collapse; }
+  th { font-weight: 600; font-size: 11px; color: #8a93a6; text-align: center; padding: 2px 8px; }
+  td { padding: 4px 8px; text-align: center; vertical-align: middle; }
+  td.name { text-align: left; font-weight: 600; white-space: nowrap; }
+  td svg, td img { display: block; margin: 0 auto; }
+  .sep { border-left: 1px solid rgba(128,128,128,.25); }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+  .card { width: 168px; border-radius: 12px; padding: 12px 10px 10px; text-align: center; color: #fff; font-weight: 700; }
+  .card .city { font-size: 11px; opacity: .8; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+  .card .nm { font-size: 17px; letter-spacing: .02em; }
+  .hud { display: inline-flex; align-items: center; gap: 8px; background: rgba(8,11,16,.86); border: 1px solid #2a3242;
+         border-radius: 8px; padding: 6px 10px; font: 800 20px/1 system-ui, sans-serif; color: #fff; }
+  .hud .k { font-size: 14px; letter-spacing: .06em; }
+  .hud .clk { font-size: 13px; color: #9fdcff; padding: 0 6px; }
+  canvas.ice { border-radius: 8px; display: block; }
+  .big { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding: 0 18px 18px; }
+  .big > div { border-radius: 12px; padding: 12px; display: flex; justify-content: center; gap: 12px; }
+  #status { padding: 4px 18px 18px; color: #8a93a6; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wm dark" id="wm-dark"></div>
+  <div class="wm light" id="wm-light"></div>
+  <div class="fav" id="fav"></div>
+</header>
+<div id="main"></div>
+<div id="status">loading...</div>
+<script type="module">
+import { TEAMS } from '../shared/constants.js';
+import { teamLogoSVG, gameLogoSVG, svgToDataURI, faviconDataURI, svgToCanvas } from './logos.js';
+
+const $ = (id) => document.getElementById(id);
+const hex = (n) => '#' + n.toString(16).padStart(6, '0');
+const params = new URLSearchParams(location.search);
+const view = params.get('view') || 'all';
+if (params.get('zoom')) document.body.style.zoom = params.get('zoom');
+
+// favicon of this page + previews
+const fav = faviconDataURI();
+const link = document.createElement('link'); link.rel = 'icon'; link.href = fav; document.head.appendChild(link);
+$('fav').innerHTML = [16, 32, 64].map((s) => `<div><img src="${fav}" width="${s}" height="${s}" alt=""><span>${s}px</span></div>`).join('');
+
+$('wm-dark').innerHTML = gameLogoSVG({ width: view === 'wordmark' ? 900 : 420, theme: 'dark' });
+$('wm-light').innerHTML = gameLogoSVG({ width: view === 'wordmark' ? 900 : 420, theme: 'light' });
+
+const main = $('main');
+
+function table(bg) {
+  const monoColor = (t) => (bg === 'dark' ? '#ffffff' : hex(t.colors.secondary));
+  const cols = [
+    ['full', 160], ['full', 96], ['full', 48], ['full', 24],
+    ['mark', 96], ['mark', 48], ['mark', 28], ['mark', 24],
+    ['mono', 96], ['mono', 48],
+  ];
+  let h = `<table><tr><th></th>${cols.map(([v, s], i) => `<th class="${i === 4 || i === 8 ? 'sep' : ''}">${v} ${s}</th>`).join('')}</tr>`;
+  TEAMS.forEach((t, ti) => {
+    h += `<tr><td class="name">${t.city}<br>${t.name}<br><small>${t.key}</small></td>`;
+    cols.forEach(([variant, size], i) => {
+      // even columns inline the SVG, odd ones go through a data URI <img> (both paths exercised)
+      const svg = teamLogoSVG(ti, { size, variant, mono: monoColor(t) });
+      const cell = i % 2 ? `<img src="${svgToDataURI(svg)}" width="${size}" height="${size}" alt="">` : svg;
+      h += `<td class="${i === 4 || i === 8 ? 'sep' : ''}">${cell}</td>`;
+    });
+    h += '</tr>';
+  });
+  return h + '</table>';
+}
+
+async function context() {
+  // lobby cards
+  let cards = '<div class="row">';
+  TEAMS.forEach((t, i) => {
+    cards += `<div class="card" style="background:linear-gradient(160deg, ${hex(t.colors.secondary)} 0%, #0b0f17 100%);` +
+             `border:2px solid ${hex(t.colors.primary)}">${teamLogoSVG(i, { size: 120 })}` +
+             `<div class="city">${t.city}</div><div class="nm" style="color:${hex(t.colors.primary)}">${t.name}</div></div>`;
+  });
+  cards += '</div>';
+  // HUD scoreboards with 28px marks
+  let hud = '<div class="row" style="margin-top:14px">';
+  [[0, 1], [2, 3], [4, 5]].forEach(([a, b], n) => {
+    hud += `<div class="hud">${teamLogoSVG(a, { size: 28, variant: 'mark' })}<span class="k">${TEAMS[a].key}</span>` +
+           `<span>${n + 1}</span><span class="clk">2ND 1:4${n}</span><span>${3 - n}</span>` +
+           `<span class="k">${TEAMS[b].key}</span>${teamLogoSVG(b, { size: 28, variant: 'mark' })}</div>`;
+  });
+  hud += '</div>';
+  main.insertAdjacentHTML('beforeend', `<h2>In context: lobby cards, HUD 28px marks, center-ice decal (svgToCanvas + mono)</h2>` +
+    `<div class="panel dark">${cards}${hud}<div class="row" style="margin-top:14px" id="ice"></div></div>`);
+  // center-ice decal: rasterize mono crests through svgToCanvas and composite on an ice canvas
+  const ice = $('ice');
+  for (const ti of [0, 1, 2, 3, 4, 5]) {
+    const c = document.createElement('canvas'); c.width = 200; c.height = 200; c.className = 'ice';
+    const g = c.getContext('2d');
+    g.fillStyle = '#e9f3f8'; g.fillRect(0, 0, 200, 200);
+    g.fillStyle = '#c8102e'; g.fillRect(96, 0, 8, 200);
+    g.strokeStyle = '#2f6fd6'; g.lineWidth = 3; g.beginPath(); g.arc(100, 100, 92, 0, Math.PI * 2); g.stroke();
+    const decal = await svgToCanvas(teamLogoSVG(ti, { variant: 'mono', mono: hex(TEAMS[ti].colors.primary) }), 150, 150);
+    g.globalAlpha = 0.8; g.drawImage(decal, 25, 25); g.globalAlpha = 1;
+    ice.appendChild(c);
+  }
+}
+
+if (view === 'big') {
+  // 300px of every crest for detailed inspection
+  let h = '<div class="big">';
+  TEAMS.forEach((t, i) => {
+    h += `<div style="background:${i % 2 ? '#eef3f8' : '#0d1117'}">${teamLogoSVG(i, { size: 280 })}${teamLogoSVG(i, { size: 120, variant: 'mark' })}</div>`;
+  });
+  main.innerHTML = h + '</div>';
+} else if (view === 'mono') {
+  let h = '<div class="big">';
+  TEAMS.forEach((t, i) => {
+    h += `<div style="background:#3a6f8f">${teamLogoSVG(i, { size: 280, variant: 'mono' })}${teamLogoSVG(i, { size: 120, variant: 'mono', mono: '#c8102e' })}</div>`;
+  });
+  main.innerHTML = h + '</div>';
+} else if (view === 'dark' || view === 'light') {
+  main.innerHTML = `<h2>${view} background</h2><div class="panel ${view}">${table(view)}</div>`;
+} else if (view === 'context') {
+  await context();
+} else if (view !== 'wordmark') {
+  main.innerHTML = `<h2>Dark background</h2><div class="panel dark">${table('dark')}</div>` +
+                   `<h2>Light background</h2><div class="panel light">${table('light')}</div>`;
+  await context();
+}
+$('status').textContent = 'ready';
+document.body.dataset.ready = '1';
+</script>
+</body>
+</html>

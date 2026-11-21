@@ -1,0 +1,69 @@
+# ICE RIOT game server as a systemd service, for a Linux box on your tailnet.
+#
+# Install (as root; adjust paths if you put the repo somewhere else):
+#   useradd --system --home-dir /opt/ice-riot --shell /usr/sbin/nologin iceriot
+#   git clone <repo> /opt/ice-riot   (or copy the folder; it must stay readable by iceriot)
+#   install -d -o iceriot -g iceriot -m 0750 /opt/ice-riot/data    # career stats (only writable dir)
+#   cp /opt/ice-riot/deploy/ice-riot.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now ice-riot
+#   journalctl -u ice-riot -f
+# Needs Node >= 20 at /usr/bin/node (check `command -v node`; edit ExecStart if it differs).
+# Friends then open http://<box>.<your-tailnet>.ts.net:8765/  - or run once
+# `tailscale serve --bg 8765` on the box for https://<box>.<your-tailnet>.ts.net/ .
+
+[Unit]
+Description=ICE RIOT arcade hockey server (tailnet)
+Documentation=file:///opt/ice-riot/docs/HOSTING.md
+Wants=network-online.target
+After=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=iceriot
+Group=iceriot
+WorkingDirectory=/opt/ice-riot
+Environment=PORT=8765
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node server/server.js --host 0.0.0.0
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+# --- hardening (the server only reads its own files and listens on one TCP port) ---
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+# Everything is read-only except data/ (stats.json). "-" = don't fail if it is missing.
+ReadWritePaths=-/opt/ice-riot/data
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+# AF_NETLINK: os.networkInterfaces() (startup banner); AF_UNIX: tailscale CLI -> tailscaled socket.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+# Node's JIT needs writable+executable memory: do NOT add MemoryDenyWriteExecute=yes.
+
+# Tailnet-only, like tools/firewall.ps1 on Windows: accept traffic only from localhost
+# (tailscale serve) and Tailscale addresses. Delete these two lines to allow LAN players too.
+IPAddressDeny=any
+IPAddressAllow=localhost 100.64.0.0/10 fd7a:115c:a1e0::/48
+
+[Install]
+WantedBy=multi-user.target

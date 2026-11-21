@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICE RIOT - couch test</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #131c2e; --line: #24324d; --text: #dfe7f5; --dim: #8393ad;
+    --home: #ff8a3d; --away: #7fd3ff; --ok: #3ddc84; --warn: #ffcc4d; --bad: #ff5c6c; --lit: #ffe27a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 4px; letter-spacing: .04em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 20px 0 8px; }
+  .sub { color: var(--dim); margin: 0 0 12px; }
+  form { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: end; background: var(--panel);
+         border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--dim); }
+  label.inline { flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-size: 14px; }
+  input[type=text], input[type=number] { background: #0a101c; color: var(--text); border: 1px solid var(--line);
+         border-radius: 5px; padding: 5px 7px; font: 13px ui-monospace, Consolas, monospace; }
+  input#ws { width: min(340px, 80vw); }
+  input#reserve { width: 64px; }
+  button { background: #1f6feb; color: #fff; border: 0; border-radius: 5px; padding: 6px 14px; font-weight: 600; cursor: pointer; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+  .card.joined { border-color: #3a5a8c; }
+  .card.home { box-shadow: inset 4px 0 0 var(--home); }
+  .card.away { box-shadow: inset 4px 0 0 var(--away); }
+  .head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .head b { font-size: 15px; }
+  .devid { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 2px 0 8px; }
+  .badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 99px; background: #26324a; color: var(--dim); white-space: nowrap; }
+  .badge.online { background: rgba(61,220,132,.15); color: var(--ok); }
+  .badge.connecting, .badge.reconnecting { background: rgba(255,204,77,.15); color: var(--warn); }
+  .badge.reserved { background: rgba(127,211,255,.12); color: var(--away); }
+  .row { display: flex; gap: 12px; align-items: center; }
+  .stick { position: relative; width: 84px; height: 84px; flex: none; border-radius: 50%; background: #0a101c; border: 1px solid var(--line); }
+  .stick .dz { position: absolute; inset: 0; margin: auto; width: 20%; height: 20%; border-radius: 50%; border: 1px dashed #33476b; }
+  .stick .raw, .stick .dot { position: absolute; left: 50%; top: 50%; border-radius: 50%; transform: translate(-50%, -50%); }
+  .stick .raw { width: 8px; height: 8px; background: #4b5d80; }
+  .stick .dot { width: 12px; height: 12px; background: var(--lit); box-shadow: 0 0 8px var(--lit); }
+  .nums { font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--dim); min-width: 0; }
+  .nums span { color: var(--text); }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .chip { font: 11px ui-monospace, Consolas, monospace; padding: 2px 6px; border-radius: 4px; background: #0a101c; color: #56688a; border: 1px solid var(--line); }
+  .chip.on { background: var(--lit); color: #1a1400; border-color: var(--lit); }
+  .chips.mapped .chip.on { background: var(--ok); border-color: var(--ok); color: #04210f; }
+  .meta { margin-top: 8px; font-size: 12px; color: var(--dim); }
+  .meta span { color: var(--text); }
+  .hold { height: 4px; background: #0a101c; border-radius: 2px; margin-top: 8px; overflow: hidden; }
+  .hold i { display: block; height: 100%; width: 0; background: var(--bad); }
+  .empty { color: var(--dim); background: var(--panel); border: 1px dashed var(--line); border-radius: 8px; padding: 16px; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0;
+        font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
+  .err { color: var(--bad); }
+  #fileWarn { display: none; background: rgba(255,92,108,.12); color: var(--bad); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<h1>ICE RIOT &middot; couch co-op test</h1>
+<p class="sub">Press <b>START</b> or <b>A</b> on a controller (index &ge; reservePads) to join as its own client.
+  Hold <b>LB</b> / <b>RB</b> while joining for home / away (otherwise: side with fewer humans).
+  In the lobby LB / RB switch teams. Hold <b>SELECT/BACK</b> 1&nbsp;s to leave.</p>
+<div id="fileWarn">Open this page through the game server (e.g. http://localhost:8765/couch-test.html), not from disk: ES modules do not load over file://.</div>
+
+<form id="cfg">
+  <label>WebSocket URL (?ws=)<input id="ws" type="text" spellcheck="false"></label>
+  <label>Room (?room=)<input id="room" type="text" spellcheck="false" style="width:110px"></label>
+  <label>reservePads (?reserve=)<input id="reserve" type="number" min="0" max="8"></label>
+  <button type="submit">Apply (reload)</button>
+  <label class="inline"><input id="pause" type="checkbox"> setPaused (send zeros)</label>
+</form>
+
+<h2>Gamepads</h2>
+<div id="pads" class="grid"></div>
+
+<h2>couch.list()</h2>
+<pre id="list">[]</pre>
+
+<h2>onChange log</h2>
+<pre id="log"></pre>
+
+<script>
+  if (location.protocol === 'file:') document.getElementById('fileWarn').style.display = 'block';
+</script>
+<script type="module">
+import { createCouch, mapPad, readButtons, PAD } from './couch.js';
+import { BTN } from '../shared/constants.js';
+
+const LEAVE_MS = 1000;
+const q = new URLSearchParams(location.search);
+const defWs = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host || 'localhost:8765'}/ws`;
+const cfg = {
+  ws: q.get('ws') || defWs,
+  room: q.get('room') || 'main',
+  reserve: q.has('reserve') ? Math.max(0, parseInt(q.get('reserve'), 10) || 0) : 1,
+};
+const $ = (id) => document.getElementById(id);
+$('ws').value = cfg.ws; $('room').value = cfg.room; $('reserve').value = cfg.reserve;
+$('cfg').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const p = new URLSearchParams();
+  p.set('ws', $('ws').value.trim() || defWs);
+  p.set('room', $('room').value.trim() || 'main');
+  p.set('reserve', String(Math.max(0, parseInt($('reserve').value, 10) || 0)));
+  location.search = p.toString();
+});
+
+const logEl = $('log');
+function log(text, isErr) {
+  const line = document.createElement('div');
+  if (isErr) line.className = 'err';
+  line.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+  logEl.prepend(line);
+  while (logEl.childNodes.length > 200) logEl.lastChild.remove();
+}
+
+const teamName = (t) => (t === 0 ? 'home' : t === 1 ? 'away' : 'spectator');
+const couch = createCouch({
+  wsUrl: cfg.ws, room: cfg.room, reservePads: cfg.reserve,
+  onChange(list, err) {
+    if (err) log(err, true);
+    else log(list.length ? list.map((e) => `${e.name}[pad ${e.pad}] id=${e.clientId || '-'} ${teamName(e.team)} ${e.connected ? 'online' : 'offline'}`).join(' | ') : '(no couch players)');
+    $('list').textContent = JSON.stringify(list, null, 1);
+  },
+});
+log(`createCouch({ wsUrl: ${cfg.ws}, room: ${cfg.room}, reservePads: ${cfg.reserve} })`);
+$('pause').addEventListener('change', (e) => couch.setPaused(e.target.checked));
+window.couch = couch;  // poke at it from the console
+window.addEventListener('gamepadconnected', (e) => log(`gamepadconnected #${e.gamepad.index}: ${e.gamepad.id}`));
+window.addEventListener('gamepaddisconnected', (e) => log(`gamepaddisconnected #${e.gamepad.index}`));
+
+const BUTTON_NAMES = ['A', 'B', 'X', 'Y', 'LB', 'RB', 'LT', 'RT', 'SEL', 'START', 'LS', 'RS', '↑', '↓', '←', '→', 'HOME'];
+const MAPPED = [['SHOOT', BTN.SHOOT], ['PASS', BTN.PASS], ['ACTION', BTN.ACTION], ['TURBO', BTN.TURBO]];
+const cards = [];
+const padsEl = $('pads');
+const emptyEl = document.createElement('div');
+emptyEl.className = 'empty';
+emptyEl.textContent = 'No gamepads detected yet. Connect controllers and press any button on each (browsers hide pads until then).';
+
+function makeCard(i) {
+  const el = document.createElement('div');
+  el.className = 'card';
+  el.innerHTML = `
+    <div class="head"><b>Pad ${i}</b><span class="badge"></span></div>
+    <div class="devid"></div>
+    <div class="row">
+      <div class="stick"><div class="dz"></div><div class="raw"></div><div class="dot"></div></div>
+      <div class="nums">
+        mx <span class="mx">0</span> &nbsp; mz <span class="mz">0</span><br>
+        axes <span class="axes"></span><br>
+        b <span class="b">0</span>
+      </div>
+    </div>
+    <div class="chips raw-chips">${BUTTON_NAMES.map((n) => `<span class="chip">${n}</span>`).join('')}</div>
+    <div class="chips mapped">${MAPPED.map(([n]) => `<span class="chip">${n}</span>`).join('')}</div>
+    <div class="meta"></div>
+    <div class="hold"><i></i></div>`;
+  const c = {
+    el, badge: el.querySelector('.badge'), devid: el.querySelector('.devid'),
+    raw: el.querySelector('.stick .raw'), dot: el.querySelector('.stick .dot'),
+    mx: el.querySelector('.mx'), mz: el.querySelector('.mz'), axes: el.querySelector('.axes'), b: el.querySelector('.b'),
+    rawChips: [...el.querySelectorAll('.raw-chips .chip')], mapChips: [...el.querySelectorAll('.mapped .chip')],
+    meta: el.querySelector('.meta'), hold: el.querySelector('.hold i'), last: {},
+  };
+  return c;
+}
+
+function set(c, key, value, apply) {
+  if (c.last[key] === value) return;
+  c.last[key] = value;
+  apply(value);
+}
+
+const out = { mx: 0, mz: 0, b: 0 };
+function render() {
+  let pads = [];
+  try { pads = navigator.getGamepads ? [...navigator.getGamepads()] : []; } catch { pads = []; }
+  let shown = 0;
+  for (let i = 0; i < pads.length; i++) {
+    const p = pads[i];
+    if (!p || !p.connected) { if (cards[i]) cards[i].el.style.display = 'none'; continue; }
+    shown++;
+    const c = cards[i] || (cards[i] = makeCard(i));
+    if (!c.el.isConnected) padsEl.appendChild(c.el);
+    c.el.style.display = '';
+    const raw = readButtons(p);
+    mapPad(p, raw, out);
+    const d = couch.debug(i);
+    const reserved = i < couch.reservePads;
+    let status = reserved ? 'reserved (main player)' : 'press START / A to join';
+    let cls = reserved ? 'reserved' : '';
+    if (d && d.joined) { status = d.status; cls = d.status; }
+    set(c, 'badge', status + '|' + cls, () => { c.badge.textContent = status; c.badge.className = 'badge ' + cls; });
+    set(c, 'devid', `${p.id} [${p.mapping || 'no mapping'}]`, (v) => { c.devid.textContent = v; c.devid.title = v; });
+    const team = d && d.joined ? d.team : -2;
+    set(c, 'cls', `${d && d.joined ? 'joined' : ''} ${team === 0 ? 'home' : team === 1 ? 'away' : ''}`, (v) => { c.el.className = 'card ' + v; });
+    const ax = p.axes[0] || 0, az = p.axes[1] || 0;
+    c.raw.style.left = `${50 + Math.max(-1, Math.min(1, ax)) * 44}%`;
+    c.raw.style.top = `${50 + Math.max(-1, Math.min(1, az)) * 44}%`;
+    c.dot.style.left = `${50 + out.mx * 44}%`;
+    c.dot.style.top = `${50 + out.mz * 44}%`;   // +mz = screen down
+    set(c, 'mx', out.mx.toFixed(3), (v) => { c.mx.textContent = v; });
+    set(c, 'mz', out.mz.toFixed(3), (v) => { c.mz.textContent = v; });
+    set(c, 'axes', Array.from(p.axes, (a) => a.toFixed(2)).join(' '), (v) => { c.axes.textContent = v; });
+    set(c, 'b', String(out.b), (v) => { c.b.textContent = v; });
+    set(c, 'rawbits', raw, () => { c.rawChips.forEach((ch, k) => ch.classList.toggle('on', !!(raw & (1 << k)))); });
+    set(c, 'mapbits', out.b, () => { c.mapChips.forEach((ch, k) => ch.classList.toggle('on', !!(out.b & MAPPED[k][1]))); });
+    const meta = d && d.joined
+      ? `<span>${d.name}</span> &middot; id <span>${d.clientId || '-'}</span> &middot; team <span>${teamName(d.team)}</span>` +
+        `${d.auto ? ' (auto pending)' : d.want !== d.team && d.want >= 0 ? ` (asked ${teamName(d.want)})` : ''}` +
+        ` &middot; <span>${d.inGame ? 'in game' : 'lobby'}</span> &middot; in sent <span>${d.seq}</span>${d.paused ? ' &middot; <span>PAUSED</span>' : ''}`
+      : reserved ? 'Handled by input.js (keyboard + this pad).' : 'Not joined.';
+    set(c, 'meta', meta, (v) => { c.meta.innerHTML = v; });
+    const hold = d && d.joined ? Math.min(1, d.holdMs / LEAVE_MS) : 0;
+    c.hold.style.width = `${(hold * 100).toFixed(0)}%`;
+  }
+  if (!shown && !emptyEl.isConnected) padsEl.appendChild(emptyEl);
+  else if (shown && emptyEl.isConnected) emptyEl.remove();
+}
+
+function frame() {
+  couch.update();
+  render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.addEventListener('beforeunload', () => couch.dispose());
+</script>
+</body>
+</html>

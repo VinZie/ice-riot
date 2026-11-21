@@ -1,0 +1,23 @@
+# ICE RIOT build-context filter. Patterns are relative to the REPO ROOT (the build context).
+#
+# Docker reads .dockerignore from the root of the build context, or (BuildKit) from
+# <Dockerfile>.dockerignore next to the Dockerfile. With context = repo root, put this
+# file at ./.dockerignore or deploy/Dockerfile.dockerignore to make it take effect.
+# It only shrinks the upload: deploy/Dockerfile COPYs package.json, server/, shared/ and
+# public/ explicitly, so nothing else can end up in the image either way.
+
+# Exclude everything ...
+*
+
+# ... except what the image needs.
+!package.json
+!server
+!shared
+!public
+
+# Junk that may live inside those folders.
+**/node_modules
+**/.DS_Store
+**/Thumbs.db
+**/*.log
+**/.env

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICE RIOT - fight test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #070a14; color: #dfe9ff; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
+  #stage { position: absolute; inset: 0;
+    background:
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0 2px, transparent 2px 120px),
+      linear-gradient(#1a2740 0 40%, #cfe0ee 40% 100%); }
+  #fake { position: absolute; left: 50%; top: 58%; transform: translate(-50%, -50%); font: italic 900 40px 'Arial Black', sans-serif; color: rgba(20,30,60,0.25); }
+  #panel { position: absolute; left: 10px; bottom: 10px; z-index: 100; background: rgba(5,8,18,0.82); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 8px; padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; max-width: calc(100vw - 40px); }
+  #panel select, #panel button { font: inherit; background: #121a2e; color: #dfe9ff; border: 1px solid #34456b; border-radius: 4px; padding: 2px 6px; }
+  #panel button { cursor: pointer; }
+  #status { width: 100%; opacity: 0.85; }
+  body.shot #panel { display: none; }
+</style>
+</head>
+<body>
+<div id="stage"><div id="fake">(paused game underneath)</div></div>
+<div id="panel">
+  <label>You <select id="ta"></select></label>
+  <label>AI <select id="tb"></select></label>
+  <label>AI level <select id="diff"><option value="0">rookie</option><option value="1" selected>pro</option><option value="2">all-star</option></select></label>
+  <label><input type="checkbox" id="auto"> AI vs AI</label>
+  <button id="go">New fight (R)</button>
+  <div id="status">J / Space = jab &middot; L = haymaker &middot; K = block (hold) &middot; Shift = dodge</div>
+</div>
+<script type="module">
+import { TEAMS, BTN, DT } from '../shared/constants.js';
+import { createFight, stepFight, fightSnapshot, drainFightEvents, fightAI, fightResult, FIGHT } from '../shared/fight.js';
+import { createFightView } from './fight-view.js';
+
+const q = new URLSearchParams(location.search);
+const $ = (id) => document.getElementById(id);
+for (const sel of [$('ta'), $('tb')]) TEAMS.forEach((t, i) => sel.add(new Option(`${t.city} ${t.name}`, i)));
+$('ta').value = q.get('ta') ?? 0;
+$('tb').value = q.get('tb') ?? 1;
+$('diff').value = q.get('diff') ?? 1;
+$('auto').checked = q.get('auto') === '1';
+if (q.get('shot') === '1') document.body.classList.add('shot');
+
+const view = createFightView($('stage'));
+window.__view = view;
+
+// keyboard: held keys + latched taps (a tap between two sim steps is never lost)
+const KEYS = { KeyJ: BTN.SHOOT, Space: BTN.SHOOT, KeyK: BTN.PASS, KeyL: BTN.ACTION, ShiftLeft: BTN.TURBO, ShiftRight: BTN.TURBO };
+const held = new Set();
+let latched = 0;
+addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'SELECT') return;
+  if (e.code === 'KeyR') { newFight(); return; }
+  if (!(e.code in KEYS)) return;
+  e.preventDefault();
+  if (e.repeat) return;
+  held.add(e.code); latched |= KEYS[e.code];
+});
+addEventListener('keyup', (e) => held.delete(e.code));
+addEventListener('blur', () => { held.clear(); latched = 0; });
+function pollKeys() { let b = latched; latched = 0; for (const c of held) b |= KEYS[c]; return b; }
+
+let fight = null, seed = +(q.get('seed') ?? 1), restartAt = -1, simTime = 0;
+function pickFighter(teamIdx, slot) {
+  const sk = TEAMS[teamIdx].skaters;
+  let k = 0; sk.forEach((s, i) => { if (s.chk > sk[k].chk) k = i; });
+  return { id: slot * 4 + k, s: sk[k] };
+}
+function newFight() {
+  const ta = +$('ta').value, tb = +$('tb').value;
+  const A = pickFighter(ta, 0), B = pickFighter(tb, 1);
+  fight = createFight({ a: A.id, b: B.id, teamA: ta, teamB: tb, chkA: A.s.chk, chkB: B.s.chk, seed: seed++, difficulty: +$('diff').value });
+  if (q.get('hp')) { fight.A.hp = fight.B.hp = +q.get('hp'); }
+  view.show(fightSnapshot(fight), {
+    nameA: A.s.name, nameB: B.s.name, numA: A.s.num, numB: B.s.num,
+    colorA: TEAMS[ta].colors, colorB: TEAMS[tb].colors,
+    hint: $('auto').checked ? 'AI vs AI demo  ·  R = new fight' : 'J jab  ·  L haymaker  ·  K block  ·  SHIFT dodge',
+  });
+  restartAt = -1;
+  $('status').textContent = `${A.s.name} (chk ${A.s.chk}) vs ${B.s.name} (chk ${B.s.chk}) - J/Space jab, L haymaker, K block, Shift dodge`;
+}
+$('go').onclick = newFight;
+for (const id of ['ta', 'tb', 'diff', 'auto']) $(id).onchange = newFight;
+
+function simStep() {
+  const auto = $('auto').checked;
+  const d = +$('diff').value;
+  const inA = auto ? fightAI(fight, 'a', Math.max(d, 1)) : { b: pollKeys() };
+  stepFight(fight, DT, inA, fightAI(fight, 'b', d));
+  simTime += DT;
+}
+
+newFight();
+
+// optional fast-forward for screenshots: ?ff=seconds (&freeze=1 keeps that frame)
+const ff = +(q.get('ff') || 0);
+if (ff > 0) {
+  for (let t = 0; t < ff - 1e-9; t += DT) {
+    if (fight.done) break;
+    simStep();
+    view.update(fightSnapshot(fight), DT, drainFightEvents(fight));
+  }
+}
+window.__fight = () => ({ snap: fightSnapshot(fight), result: fightResult(fight) });
+window.__raw = () => fight;
+
+let acc = 0, last = performance.now();
+window.__frames = 0;
+function frame(now) {
+  window.__frames++;
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (q.get('freeze') === '1') { view.update(fightSnapshot(fight), 0, []); return; }
+  acc += dt;
+  let n = 0;
+  while (acc >= DT && n < 6) { acc -= DT; n++; if (!fight.done) simStep(); }
+  if (n === 6) acc = 0;
+  view.update(fightSnapshot(fight), dt, drainFightEvents(fight));
+  if (fight.done) {
+    const r = fightResult(fight);
+    if (restartAt < 0) {
+      restartAt = now + ($('auto').checked ? 1200 : 2500);
+      const wn = r.winner === fight.A.id ? 'A' : 'B';
+      $('status').textContent = `Winner: side ${wn} by ${r.how === 'ko' ? 'KO' : 'decision'} (hp ${fight.A.hp.toFixed(0)} - ${fight.B.hp.toFixed(0)}). R for a new fight.`;
+    } else if (now >= restartAt && $('auto').checked) newFight();
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

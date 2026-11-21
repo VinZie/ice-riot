@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Challenge Lab</title>
+<style>
+  :root {
+    --bg: #070b18; --bg2: #0e1530; --line: #26325e; --text: #e8edfb; --muted: #8e9bc4;
+    --btn: #141d3d; --btn-hi: #1d2a57; --accent: #37e2ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: radial-gradient(1200px 600px at 70% -10%, #1a2a5c 0%, transparent 60%),
+                radial-gradient(900px 500px at -10% 110%, #3a1450 0%, transparent 60%), var(--bg);
+    color: var(--text); font: 14px/1.4 system-ui, "Segoe UI", sans-serif; padding: 18px 16px 40px;
+  }
+  h1 { margin: 0 0 4px; font: italic 900 28px/1 "Arial Black", Impact, system-ui, sans-serif; letter-spacing: .02em;
+       text-shadow: 3px 3px 0 #ff4fd8, -1px -1px 0 #37e2ff; }
+  .sub { color: var(--muted); margin: 0 0 14px; }
+  .status { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .pill { background: var(--bg2); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; font-weight: 700; font-size: 12.5px; }
+  .pill b { color: var(--accent); }
+  .wrap { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; max-width: 1200px; }
+  @media (max-width: 860px) { .wrap { grid-template-columns: minmax(0, 1fr); } }
+  .group { background: rgba(14, 21, 48, .85); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px 12px; margin-bottom: 12px; }
+  .group h2 { margin: 0 0 8px; font: 900 12px/1 system-ui, sans-serif; letter-spacing: .16em; color: var(--muted); }
+  .btns { display: flex; flex-wrap: wrap; gap: 7px; }
+  button { font: 700 13px/1 system-ui, "Segoe UI", sans-serif; color: var(--text); background: var(--btn); border: 1.5px solid var(--line);
+           border-radius: 8px; padding: 9px 11px; cursor: pointer; }
+  button:hover, button:focus-visible { background: var(--btn-hi); border-color: var(--accent); outline: none; }
+  button.hot { border-color: #ff4fd8; }
+  button.gold { border-color: #ffc933; }
+  .log { background: #050813; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; height: 340px; overflow-y: auto;
+         font: 12px/1.45 ui-monospace, Consolas, monospace; color: #b7c3e6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .log .u { color: #ffc933; font-weight: 700; }
+  .mini { margin-top: 12px; font-size: 12px; color: var(--muted); }
+  .mini b { color: var(--text); }
+</style>
+</head>
+<body>
+<h1>CHALLENGE LAB</h1>
+<p class="sub">Feeds synthetic Snapshot states + events into <code>achievements.js</code> (local player = client 1). Progress is stored under a lab-only key.</p>
+<div class="status" id="status"></div>
+<div class="wrap">
+  <div id="groups"></div>
+  <div>
+    <div class="log" id="log"></div>
+    <div class="mini" id="mini"></div>
+  </div>
+</div>
+
+<script type="module">
+import { createAchievements, CHALLENGES } from './achievements.js';
+import { PHASE, EVENT, TICK_RATE } from '../shared/constants.js';
+
+const params = new URLSearchParams(location.search);
+const KEY = 'iceRiot.achievements.lab';
+const ME = 1;
+const OTHER = 2;
+const $ = (id) => document.getElementById(id);
+
+function log(msg, cls = '') {
+  const el = $('log');
+  const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  el.appendChild(line);
+  while (el.childNodes.length > 200) el.firstChild.remove();
+  el.scrollTop = el.scrollHeight;
+}
+
+function makeState() {
+  return {
+    tick: 0, ph: PHASE.FACEOFF, phT: 1.6, per: 1, clk: 120, sc: [0, 0], teams: [0, 1],
+    p: Array.from({ length: 8 }, (_, i) => ({
+      id: i, tm: i >> 2, g: (i & 3) === 3 ? 1 : 0, x: i >> 2 ? 10 : -10, y: 0, z: 0, vx: 0, vz: 0,
+      f: 0, s: 0, sT: 0, tb: 1, fire: 0, ch: 0, c: 0, n: 10 + i,
+    })),
+    k: { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, o: -1 }, gl: [],
+  };
+}
+
+// A tiny scripted "client": owns a fake state and pushes it + events through ach.handle().
+function makeHarness(ach) {
+  const H = {
+    st: makeState(), game: 1,
+    feed(events = [], ticks = 2) {
+      H.st.tick += ticks;
+      for (const e of events) if (e.type !== EVENT.FACEOFF) log(`  ${e.type} ${JSON.stringify({ ...e, type: undefined })}`);
+      ach.handle(events, structuredClone(H.st), { myId: ME });
+      renderStatus();
+    },
+    me() { return H.st.p.findIndex((p) => p.c === ME); },
+    myTeam() { const m = H.me(); return m < 0 ? 0 : m >> 2; },
+    mate() { const t = H.myTeam(), m = H.me() & 3; return t * 4 + ((m + 1) % 3); },
+    opp() { return H.myTeam() ? 0 : 4; },
+    advance(s) { H.feed([], Math.round(s * TICK_RATE)); },
+    drop() { H.st.ph = PHASE.PLAY; H.feed([{ type: EVENT.FACEOFF, x: 0, z: 0 }]); },
+    shot(kind = 'wrist', power = 0.6, by = H.me()) { H.st.ph = PHASE.PLAY; H.feed([{ type: EVENT.SHOT, by, power, kind }]); },
+    goal({ scorer = H.me(), assist = -1, oneTimer = false } = {}) {
+      const team = scorer >> 2;
+      H.st.sc[team]++;
+      H.st.ph = PHASE.GOAL;
+      H.feed([{ type: EVENT.GOAL, team, scorer, assist, oneTimer, x: team ? -26.7 : 26.7, z: 0 }]);
+      H.st.ph = PHASE.PLAY; H.st.clk = Math.max(20, H.st.clk); H.advance(4);
+    },
+    hit(big) { H.feed([{ type: EVENT.HIT, by: H.me(), target: H.opp() + 1, power: big ? 1 : 0.4, big: big ? 1 : 0, x: 3, z: 12 }]); },
+    endGame(ot = false) {
+      if (ot) { H.st.per = 4; H.feed([{ type: EVENT.PERIOD, period: 4 }]); }
+      H.st.ph = PHASE.GAME_OVER;
+      H.feed([{ type: EVENT.FINAL, score: [...H.st.sc] }]);
+      log(`FINAL ${H.st.sc.join('-')} (you: ${H.myTeam() ? 'away' : 'home'})`);
+      H.newGame();
+    },
+    play(mine, theirs, ot = false) {
+      for (let i = 0; i < theirs; i++) H.goal({ scorer: H.opp() });
+      for (let i = 0; i < mine; i++) H.goal();
+      H.endGame(ot);
+    },
+    newGame() {
+      const c = H.me();
+      H.st = makeState(); H.game++;
+      if (c >= 0) H.st.p[c].c = ME;
+      H.feed([]); log(`-- new game #${H.game}`);
+    },
+  };
+  H.st.p[0].c = ME;
+  H.st.p[5].c = OTHER;
+  return H;
+}
+
+const SCEN = {
+  'Wrist goal': (H) => { H.shot(); H.goal(); },
+  'One-timer goal': (H) => { H.feed([{ type: EVENT.PASS, by: H.mate(), to: H.me() }]); H.shot('onetimer', 1); H.goal({ oneTimer: true, assist: H.mate() }); },
+  'Long slapshot goal': (H) => { H.st.p[H.me()].x = 0; H.shot('slap', 0.85); H.goal(); },
+  'Assist a one-timer': (H) => { H.feed([{ type: EVENT.PASS, by: H.me(), to: H.mate() }]); H.goal({ scorer: H.mate(), assist: H.me(), oneTimer: true }); },
+  'Goal off the drop': (H) => { H.drop(); H.advance(4); H.goal(); },
+  'Goal at the horn': (H) => { H.st.ph = PHASE.PLAY; H.st.clk = 2.4; H.feed([]); H.goal(); },
+  'Hat trick': (H) => { H.goal(); H.goal(); H.goal(); },
+  'Big hit': (H) => H.hit(true),
+  'Shatter glass': (H) => { H.hit(true); H.feed([{ type: EVENT.GLASS, panel: 6, by: H.me(), target: H.opp() + 1, x: 3, z: 13 }]); },
+  'Steal': (H) => H.feed([{ type: EVENT.STEAL, by: H.me(), from: H.opp() }]),
+  'Deke': (H) => H.feed([{ type: EVENT.DEKE, by: H.me() }]),
+  'Full slapshot': (H) => H.shot('slap', 1),
+  'Catch fire': (H) => { H.st.p[H.me()].fire = 1; H.feed([{ type: EVENT.FIRE, player: H.me(), on: 1 }]); },
+  'Fire goes out': (H) => { H.st.p[H.me()].fire = 0; H.feed([{ type: EVENT.FIRE, player: H.me(), on: 0 }]); },
+  'Win 2-1': (H) => H.play(2, 1),
+  'OT win': (H) => H.play(1, 0, true),
+  'Shutout 1-0': (H) => H.play(1, 0),
+  'Blowout 5-0': (H) => H.play(5, 0),
+  'Comeback 3-2': (H) => H.play(3, 2),
+  'Loss 0-1': (H) => H.play(0, 1),
+  '+25 hits': (H) => { for (let i = 0; i < 25; i++) H.hit(i % 4 === 0); },
+  '+5 goals': (H) => { for (let i = 0; i < 5; i++) H.goal(); },
+  '+10 games': (H) => { for (let i = 0; i < 10; i++) H.play(0, 1); },
+  'AI events (no credit)': (H) => {
+    const ai = H.mate();
+    H.feed([{ type: EVENT.HIT, by: ai, target: 5, big: 1 }, { type: EVENT.STEAL, by: ai, from: 5 }, { type: EVENT.DEKE, by: 5 }]);
+    H.goal({ scorer: ai });
+  },
+  'Switch skater (SWITCH)': (H) => {
+    const from = H.me(), to = H.mate();
+    H.st.p[from].c = 0; H.st.p[to].c = ME;
+    H.feed([{ type: EVENT.SWITCH, client: ME, from, to }]);
+    log(`now controlling #${to}`);
+  },
+  'Change team (no SWITCH)': (H) => {
+    const from = H.me(), to = from >> 2 ? 0 : 4;
+    H.st.p[from].c = 0; H.st.p[to].c = ME;
+    H.advance(0.05); H.advance(0.5);
+    log(`now on the ${to ? 'away' : 'home'} team (#${to})`);
+  },
+  'Spectate / rejoin': (H) => {
+    const m = H.me();
+    if (m >= 0) { H.st.p[m].c = 0; H._last = m; log('spectating'); }
+    else { H.st.p[H._last ?? 0].c = ME; log('rejoined'); }
+    H.advance(0.5);
+  },
+  'New game': (H) => H.newGame(),
+};
+SCEN['Unlock everything'] = (H) => {
+  for (const k of ['Wrist goal', 'One-timer goal', 'Long slapshot goal', 'Assist a one-timer', 'Goal off the drop', 'Goal at the horn',
+    'Catch fire', 'Hat trick', 'Full slapshot', 'Big hit']) SCEN[k](H);
+  for (let i = 0; i < 3; i++) SCEN['Shatter glass'](H);
+  for (let i = 0; i < 5; i++) { SCEN['Steal'](H); SCEN['Deke'](H); SCEN['Big hit'](H); }
+  for (let i = 0; i < 3; i++) SCEN['Assist a one-timer'](H);
+  SCEN['+25 hits'](H); SCEN['+25 hits'](H); SCEN['+25 hits'](H); SCEN['+25 hits'](H);
+  SCEN['+5 goals'](H); SCEN['+5 goals'](H); SCEN['+5 goals'](H); SCEN['+5 goals'](H);
+  SCEN['Comeback 3-2'](H); SCEN['OT win'](H); SCEN['Blowout 5-0'](H); SCEN['+10 games'](H);
+};
+
+const GROUPS = [
+  ['SCORING', ['Wrist goal', 'One-timer goal', 'Long slapshot goal', 'Assist a one-timer', 'Goal off the drop', 'Goal at the horn', 'Hat trick']],
+  ['PHYSICAL + SKILL', ['Big hit', 'Shatter glass', 'Steal', 'Deke', 'Full slapshot', 'Catch fire', 'Fire goes out']],
+  ['RESULTS', ['Win 2-1', 'OT win', 'Shutout 1-0', 'Blowout 5-0', 'Comeback 3-2', 'Loss 0-1']],
+  ['CAREER GRIND', ['+25 hits', '+5 goals', '+10 games']],
+  ['CONTROL / ATTRIBUTION', ['AI events (no credit)', 'Switch skater (SWITCH)', 'Change team (no SWITCH)', 'Spectate / rejoin', 'New game']],
+];
+
+let ach, H;
+function boot(toastMs) {
+  if (ach) ach.dispose();
+  ach = createAchievements({
+    container: document.body, storageKey: KEY, toastMs,
+    onUnlock: (c) => log(`UNLOCKED  ${c.title}  (tier ${c.tier})`, 'u'),
+  });
+  H = makeHarness(ach);
+  H.feed([]);
+}
+
+function renderStatus() {
+  if (!H || !ach) return;
+  const me = H.me();
+  const l = ach.list();
+  $('status').innerHTML =
+    `<span class="pill">GAME <b>#${H.game}</b></span>`
+    + `<span class="pill">SCORE <b>${H.st.sc[0]} - ${H.st.sc[1]}</b></span>`
+    + `<span class="pill">YOU <b>${me < 0 ? 'spectating' : `#${me} ${me >> 2 ? 'AWAY' : 'HOME'}`}</b></span>`
+    + `<span class="pill">TICK <b>${H.st.tick}</b></span>`
+    + `<span class="pill">UNLOCKED <b>${l.filter((c) => c.unlocked).length} / ${l.length}</b></span>`;
+  const near = l.filter((c) => !c.unlocked && c.progress > 0).map((c) => `${c.title} ${c.progress}/${c.goal}`);
+  $('mini').innerHTML = near.length ? `<b>In progress:</b> ${near.join(' · ')}` : '';
+}
+
+function buildButtons() {
+  const host = $('groups');
+  const mk = (label, fn, cls = '') => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = label; if (cls) b.className = cls;
+    b.addEventListener('click', fn);
+    return b;
+  };
+  for (const [title, names] of GROUPS) {
+    const g = document.createElement('div'); g.className = 'group';
+    g.innerHTML = `<h2>${title}</h2>`;
+    const row = document.createElement('div'); row.className = 'btns';
+    for (const n of names) row.appendChild(mk(n, () => { log(`> ${n}`); SCEN[n](H); }));
+    g.appendChild(row); host.appendChild(g);
+  }
+  const g = document.createElement('div'); g.className = 'group';
+  g.innerHTML = '<h2>PANEL</h2>';
+  const row = document.createElement('div'); row.className = 'btns';
+  row.appendChild(mk('Open panel', () => ach.openPanel(), 'hot'));
+  row.appendChild(mk('Unlock everything', () => { log('> Unlock everything'); SCEN['Unlock everything'](H); }, 'gold'));
+  row.appendChild(mk('Reset progress', () => { ach.reset(); log('progress reset'); renderStatus(); }));
+  row.appendChild(mk('Print list()', () => console.table(ach.list())));
+  g.appendChild(row); host.appendChild(g);
+}
+
+buildButtons();
+const auto = params.get('auto');
+boot(Number(params.get('toastMs')) || (auto === 'toast' ? 600000 : 3600));
+if (auto === 'toast') {
+  ach.reset();
+  SCEN['Wrist goal'](H);                  // tier 1: LAMP LIGHTER
+  SCEN['Long slapshot goal'](H);          // tier 2: LONG BOMB
+  SCEN['Goal at the horn'](H);            // tier 3: BEAT THE HORN (+ THREE-ALARM queued behind it)
+} else if (auto === 'panel') {
+  // Build progress with a headless instance on the same key, then show the panel without toasts.
+  const silent = createAchievements({ container: null, storageKey: KEY });
+  silent.reset();
+  const S = makeHarness(silent);
+  const real = H; H = S;
+  for (const k of ['Wrist goal', 'One-timer goal', 'Big hit', 'Shatter glass', 'Catch fire', 'Win 2-1', 'Comeback 3-2', 'Goal at the horn', 'Full slapshot']) SCEN[k](S);
+  SCEN['Steal'](S); SCEN['Steal'](S); SCEN['Deke'](S); SCEN['Deke'](S); SCEN['Deke'](S);
+  SCEN['+25 hits'](S); SCEN['+25 hits'](S); SCEN['+5 goals'](S);
+  silent.dispose();
+  H = real;
+  boot(3600);
+  ach.openPanel();
+}
+renderStatus();
+</script>
+</body>
+</html>

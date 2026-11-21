@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICE RIOT render test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas#c { display: block; width: 100vw; height: 100vh; }
+  #hud { position: fixed; left: 8px; top: 8px; font: 12px/1.35 Consolas, monospace; color: #9fe6ff; background: rgba(0,0,0,0.55); padding: 6px 8px; border-radius: 4px; pointer-events: none; white-space: pre; }
+  #err { position: fixed; left: 8px; bottom: 8px; right: 8px; max-height: 45vh; overflow: auto; margin: 0; font: 12px/1.35 Consolas, monospace; color: #ff8080; background: rgba(40,0,0,0.85); padding: 6px 8px; display: none; white-space: pre-wrap; }
+</style>
+<script type="importmap">{"imports":{"three":"/vendor/three.module.min.js"}}</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<pre id="err"></pre>
+<script>
+  // error capture first, so module load failures are reported too
+  (function () {
+    const show = (msg) => {
+      const el = document.getElementById('err');
+      el.style.display = 'block';
+      el.textContent += msg + '\n';
+      document.title = 'ERROR: ' + String(msg).split('\n')[0].slice(0, 180);
+    };
+    window.__showErr = show;
+    window.onerror = (m, src, line, col, err) => { show((err && err.stack) || (m + ' @' + src + ':' + line + ':' + col)); };
+    window.addEventListener('unhandledrejection', (e) => show('unhandled: ' + ((e.reason && e.reason.stack) || e.reason)));
+  })();
+</script>
+<script type="module">
+import { createRenderer } from '/render/renderer.js';
+import { PHASE, PSTATE, EVENT, RINK, glassPanels } from '/shared/constants.js';
+
+const Q = new URLSearchParams(location.search);
+const MODE = Q.get('mode') || 'game';           // 'attract' feeds null states
+const T_AT = Q.has('t') ? parseFloat(Q.get('t')) : NaN; // fast-forward to this timeline time, render once, freeze
+const PRE = Q.has('pre') ? parseFloat(Q.get('pre')) : 3;
+const TEAMS_Q = (Q.get('teams') || '0,1').split(',').map(Number);
+const BENCH = Q.has('bench') ? parseInt(Q.get('bench'), 10) : 0;
+const hud = document.getElementById('hud');
+if (Q.has('nohud')) hud.style.display = 'none';
+
+const canvas = document.getElementById('c');
+const debug = {};
+for (const k of ['noAA', 'noShadow', 'noReflect', 'noCrowd', 'noFill', 'noGlass']) if (Q.has(k)) debug[k] = true;
+const r = createRenderer(canvas, { preserveDrawingBuffer: !isNaN(T_AT), debug, dynamicResolution: !Q.has('gpubench') && !Q.has('nodyn') });
+window.__renderer = r;
+r.setTeams(TEAMS_Q);
+r.resize(window.innerWidth, window.innerHeight);
+window.addEventListener('resize', () => r.resize(window.innerWidth, window.innerHeight));
+
+// client 1 = this PC's main player, client 3 = a couch co-op player on the same PC, client 2 = remote
+const ctx = { myId: 1, names: { 1: 'Blizzard', 2: 'Slapz', 3: 'Couchy' }, couchIds: new Set([3]) };
+if (Q.has('quality') || Q.has('shake') || Q.has('reduce')) {
+  ctx.video = { quality: Q.get('quality') || 'auto', cameraShake: Q.has('shake') ? parseFloat(Q.get('shake')) : 1, reduceFlashes: Q.get('reduce') === '1' };
+}
+const CYCLE = 20;
+const panels = glassPanels();
+
+// ---------------------------------------------------------------- fake world
+const SK = {
+  0: { cx: -7, cz: 1.5, ax: 9, az: 6, wx: 0.62, wz: 0.83, px: 0.0, pz: 1.0 },
+  1: { cx: 9, cz: -1.5, ax: 7, az: 5.5, wx: 0.55, wz: 0.71, px: 1.2, pz: 2.0 },
+  2: { cx: 13, cz: 1.0, ax: 6, az: 6, wx: 0.66, wz: 0.58, px: 2.4, pz: 0.3 },
+  4: { cx: 0, cz: 2.5, ax: 11, az: 6, wx: 0.6, wz: 0.77, px: 0.7, pz: 2.2 },
+  5: { cx: -11, cz: -2.5, ax: 8, az: 6, wx: 0.57, wz: 0.74, px: 3.1, pz: 1.1 },
+  6: { cx: 4, cz: -4, ax: 10, az: 5.5, wx: 0.69, wz: 0.6, px: 4.0, pz: 2.7 },
+};
+function skater(id, t) {
+  const s = SK[id];
+  const x = s.cx + s.ax * Math.sin(s.wx * t + s.px), z = s.cz + s.az * Math.sin(s.wz * t + s.pz);
+  const vx = s.ax * s.wx * Math.cos(s.wx * t + s.px), vz = s.az * s.wz * Math.cos(s.wz * t + s.pz);
+  return { x, z, vx, vz, f: Math.atan2(vz, vx) };
+}
+const blade = (p) => ({ x: p.x + Math.cos(p.f) * 1.0, y: 0, z: p.z + Math.sin(p.f) * 1.0 });
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function fly(a, b, t0, t1, t, arc) {
+  const u = clamp((t - t0) / (t1 - t0), 0, 1);
+  const x = lerp(a.x, b.x, u), z = lerp(a.z, b.z, u);
+  const y = lerp(a.y || 0, b.y || 0, u) + Math.sin(u * Math.PI) * (arc || 0);
+  const d = t1 - t0;
+  return { x, y, z, vx: (b.x - a.x) / d, vy: 0, vz: (b.z - a.z) / d, o: -1 };
+}
+const own = (id, p) => { const b = blade(p); return { x: b.x, y: 0, z: b.z, vx: p.vx, vy: 0, vz: p.vz, o: id }; };
+const ROT = [0, 4, 2, 5, 1, 6];
+
+function playersAt(t) {
+  const P = {};
+  for (const id of [0, 1, 2, 4, 5, 6]) P[id] = skater(id, t);
+  return P;
+}
+
+function puckAt(tc, base, P) {
+  const at = (id, tt) => blade(skater(id, base + tt));
+  if (tc >= 1.5 && tc < 2.9) return own(1, P[1]);
+  if (tc >= 1.2 && tc < 1.5) return fly(blade(skater(0, base + 1.2)), at(1, 1.5), 1.2, 1.5, tc, 0.05);
+  if (tc >= 2.9 && tc < 3.35) return fly(at(1, 2.9), { x: 26.0, y: 0.55, z: 0.6 }, 2.9, 3.35, tc, 0.25);
+  if (tc >= 3.35 && tc < 4.2) return fly({ x: 26.0, y: 0.55, z: 0.6 }, { x: 28.4, y: 0, z: 8.2 }, 3.35, 4.2, tc, 0.4);
+  if (tc >= 4.2 && tc < 5.0) return fly({ x: 28.4, y: 0, z: 8.2 }, at(4, 5.0), 4.2, 5.0, tc, 0);
+  if (tc >= 8.7 && tc < 9.0) return fly(blade(skater(ROT[Math.floor((8.7 - 5) / 1.6) % 6], base + 8.7)), at(5, 9.0), 8.7, 9.0, tc, 0);
+  if (tc >= 9.0 && tc < 9.45) return fly(at(5, 9.0), { x: -26.55, y: 0.8, z: -1.0 }, 9.0, 9.45, tc, 0.2);
+  if (tc >= 9.45 && tc < 10.6) return fly({ x: -26.55, y: 0.8, z: -1.0 }, at(2, 10.6), 9.45, 10.6, tc, 0.6);
+  if (tc >= 10.6 && tc < 11.0) return own(2, P[2]);
+  if (tc >= 11.0 && tc < 11.45) return fly(at(2, 11.0), { x: 26.95, y: 0.35, z: 0.3 }, 11.0, 11.45, tc, 0.15);
+  if (tc >= 11.45 && tc < 14.95) return { x: 27.3, y: 0, z: 0.25, vx: 0, vy: 0, vz: 0, o: -1 };
+  if (tc >= 14.95 && tc < 16.5) return { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, o: -1 };
+  // low centered shot on the home goalie -> butterfly save, rebound to the corner
+  if (tc >= 17.0 && tc < 17.4) return fly(at(4, 17.0), { x: -25.75, y: 0.03, z: 0.05 }, 17.0, 17.4, tc, 0.02);
+  if (tc >= 17.4 && tc < 18.0) return fly({ x: -25.75, y: 0.03, z: 0.05 }, { x: -21, y: 0, z: 6 }, 17.4, 18.0, tc, 0.1);
+  // free play: rotate ownership with passes
+  const f0 = tc < 1.2 ? 0 : tc < 8.7 ? 5.0 : tc < 17.0 ? 16.5 : 18.0;
+  const rel = tc - f0, slot = Math.floor(rel / 1.6), into = rel - slot * 1.6;
+  const cur = ROT[slot % 6], nxt = ROT[(slot + 1) % 6];
+  if (into < 1.3) return own(cur, P[cur]);
+  return fly(blade(skater(cur, base + f0 + slot * 1.6 + 1.3)), blade(skater(nxt, base + f0 + (slot + 1) * 1.6)), 1.3, 1.6, into, 0.05);
+}
+
+function buildState(T) {
+  const n = Math.floor(T / CYCLE), tc = T - n * CYCLE, base = n * CYCLE;
+  const P = playersAt(T);
+  const k = puckAt(tc, base, P);
+  let ph = PHASE.PLAY, phT = 0;
+  if (tc >= 11.45 && tc < 14.95) { ph = PHASE.GOAL; phT = 14.95 - tc; }
+  else if (tc >= 14.95 && tc < 16.5) { ph = PHASE.FACEOFF; phT = 16.5 - tc; }
+  const p = [];
+  for (let id = 0; id < 8; id++) {
+    const tm = id < 4 ? 0 : 1, kk = id % 4;
+    let o;
+    if (kk === 3) {
+      const gx = tm === 0 ? -25.5 : 25.5;
+      const gz = clamp(k.z * 0.3, -0.7, 0.7);
+      o = { x: gx, z: gz, vx: 0, vz: clamp(k.vz * 0.3, -2, 2), f: tm === 0 ? 0 : Math.PI };
+    } else o = { ...P[id] };
+    let s = PSTATE.SKATE, sT = (tc * 1.0) % 3, ch = 0, y = 0;
+    if (id === 1 && tc >= 1.5 && tc < 2.9) { s = PSTATE.CHARGE; sT = tc - 1.5; ch = clamp((tc - 1.5) / 1.2, 0, 1); }
+    if (id === 1 && tc >= 2.9 && tc < 3.25) { s = PSTATE.SHOOT; sT = tc - 2.9; }
+    if (id === 1 && tc >= 1.5 && tc < 3.25) { o.f = Math.atan2(0 - o.z, 26.6 - o.x); o.vx *= 0.3; o.vz *= 0.3; }
+    if (id === 2 && tc >= 10.6 && tc < 11.25) o.f = Math.atan2(0.3 - o.z, 26.6 - o.x);
+    if (id === 2 && tc >= 11.0 && tc < 11.25) { s = PSTATE.SHOOT; sT = tc - 11.0; }
+    if (id === 7 && tc >= 3.2 && tc < 3.8) { s = PSTATE.SAVE; sT = tc - 3.2; }
+    if (id === 3 && tc >= 9.3 && tc < 9.9) { s = PSTATE.SAVE; sT = tc - 9.3; }
+    if (id === 3 && tc >= 17.25 && tc < 18.0) { s = PSTATE.SAVE; sT = tc - 17.25; }
+    if (id === 4 && tc >= 4.6 && tc < 5.0) { s = PSTATE.CHECK; sT = tc - 4.6; }
+    if (id === 0 && tc >= 4.9 && tc < 6.9) { s = PSTATE.DOWN; sT = tc - 4.9; if (sT < 0.45) y = Math.sin(sT / 0.45 * Math.PI) * 0.55; o.vx *= 0.6; o.vz *= 0.6; }
+    if (id === 6 && tc >= 5.1 && tc < 5.45) { s = PSTATE.CHECK; sT = tc - 5.1; }
+    if (id === 5 && tc >= 5.4 && tc < 7.0 && false) { s = PSTATE.DOWN; sT = tc - 5.4; }
+    if (id === 5 && tc >= 7.0 && tc < 7.45) { s = PSTATE.DEKE; sT = tc - 7.0; }
+    if (id === 6 && tc >= 8.0 && tc < 8.3) { s = PSTATE.POKE; sT = tc - 8.0; }
+    if (ph === PHASE.GOAL && tm === 0 && kk < 3) { s = PSTATE.CELEBRATE; sT = tc - 11.45; o.vx *= 0.3; o.vz *= 0.3; }
+    const ids = [12, 4, 27, 31, 19, 2, 88, 30];
+    p.push({ id, tm, g: kk === 3 ? 1 : 0, x: o.x, y, z: o.z, vx: o.vx, vz: o.vz, f: o.f, s, sT, tb: 0.7, fire: id === 2 ? 1 : 0, ch, c: id === 0 ? 1 : id === 5 ? 2 : id === 1 ? 3 : 0, n: ids[id] });
+  }
+  const goals = n + (tc >= 11.45 ? 1 : 0);
+  return {
+    tick: Math.floor(T * 60), ph, phT, per: 1 + (n % 3), clk: Math.max(0, 120 - (T % 120)),
+    sc: [goals, 1], teams: TEAMS_Q, p, k,
+    gl: tc >= 5.4 && tc < 14.95 ? [5] : [],
+  };
+}
+
+const EVENTS = [
+  [0.3, () => ({ type: EVENT.FIRE, player: 2, on: true })],
+  [2.9, () => ({ type: EVENT.SHOT, by: 1, power: 0.95, kind: 'slap' })],
+  [3.35, () => ({ type: EVENT.SAVE, goalie: 7, x: 26.0, z: 0.6 })],
+  [4.2, () => ({ type: EVENT.BOARDS, x: 28.4, z: 8.2, power: 0.6 })],
+  [4.9, (st) => ({ type: EVENT.HIT, by: 4, target: 0, power: 0.92, big: true, x: st.p[0].x, z: st.p[0].z })],
+  [5.4, () => ({ type: EVENT.GLASS, panel: 5, by: 6, target: 5, x: panels[5].x, z: panels[5].z })],
+  [5.4, () => ({ type: EVENT.HIT, by: 6, target: 5, power: 1, big: true, x: panels[5].x, z: panels[5].z + 0.6 })],
+  [7.0, () => ({ type: EVENT.DEKE, by: 5 })],
+  [8.15, (st) => ({ type: EVENT.HIT, by: 6, target: 1, power: 0.35, big: false, x: st.p[6].x, z: st.p[6].z })],
+  [9.45, () => ({ type: EVENT.POST, x: -26.55, z: -1.0 })],
+  [11.0, () => ({ type: EVENT.SHOT, by: 2, power: 0.85, kind: 'wrist' })],
+  [11.45, () => ({ type: EVENT.GOAL, team: 0, scorer: 2, assist: 1, oneTimer: false, x: 26.9, z: 0.3 })],
+  [16.5, () => ({ type: EVENT.FACEOFF, x: 0, z: 0 })],
+  [17.0, () => ({ type: EVENT.SHOT, by: 4, power: 0.7, kind: 'wrist' })],
+  [17.4, () => ({ type: EVENT.SAVE, goalie: 3, x: -25.75, z: 0.05 })],
+];
+function eventsBetween(t0, t1, st) {
+  const out = [];
+  const n0 = Math.floor(t0 / CYCLE), n1 = Math.floor(t1 / CYCLE);
+  for (let n = n0; n <= n1; n++) for (const [at, mk] of EVENTS) {
+    const T = n * CYCLE + at;
+    if (T > t0 && T <= t1) out.push(mk(st));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- loop
+let T = isNaN(T_AT) ? (Q.has('start') ? parseFloat(Q.get('start')) : 0) : Math.max(0, T_AT - PRE);
+let prevT = T - 1e-6;
+// ?cam=x,y,z,lx,ly,lz overrides the camera after update (for close-up inspection screenshots)
+const CAM = Q.has('cam') ? Q.get('cam').split(',').map(Number) : null;
+const PHASE_Q = Q.has('phase') ? parseInt(Q.get('phase'), 10) : 0; // force a phase (e.g. 5 = GAME_OVER)
+function step(dt) {
+  // mode=mix alternates lobby (null) and game states every 2 s to exercise attract <-> game transitions
+  const st = MODE === 'attract' || (MODE === 'mix' && Math.floor(T / 2) % 2 === 1) ? null : buildState(T);
+  if (st && PHASE_Q) st.ph = PHASE_Q;
+  if (st && Q.has('fight')) st.fi = { a: 4, b: 6, ph: 'fight' }; // fight overlay running between players 4 and 6
+  const ev = st ? eventsBetween(prevT, T, st) : [];
+  prevT = T;
+  r.update(st, dt, ev, ctx);
+  if (CAM) { const c = r.three.camera; c.position.set(CAM[0], CAM[1], CAM[2]); c.lookAt(CAM[3], CAM[4], CAM[5]); }
+  return st;
+}
+const stats = { n: 0, up: 0, rd: 0, frame: 0, last: 0 };
+function fmtInfo() {
+  const i = r.info();
+  return `t=${T.toFixed(2)}  calls=${i.calls} tris=${i.triangles} progs=${i.programs} geos=${i.geometries} tex=${i.textures} crowd=${i.crowd} particles=${i.additive}+${i.alpha} shards=${i.shards}`;
+}
+
+const GPUBENCH = Q.has('gpubench') ? parseInt(Q.get('gpubench'), 10) : 0;
+if (GPUBENCH) {
+  // synchronous benchmark: each frame = update + render + 1px readPixels (forces the GPU to finish)
+  try {
+    const gl = r.three.renderer.getContext();
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    const px = new Uint8Array(4);
+    const dt = 1 / 60;
+    for (let i = 0; i < 60; i++) { step(dt); T += dt; r.render(); }
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    let up = 0, rd = 0, sync = 0;
+    const t0 = performance.now();
+    for (let i = 0; i < GPUBENCH; i++) {
+      const a = performance.now(); step(dt); T += dt;
+      const b = performance.now(); r.render();
+      const c = performance.now(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const d = performance.now();
+      up += b - a; rd += c - b; sync += d - c;
+    }
+    const tot = performance.now() - t0;
+    const msg = `GPUBENCH ${canvas.width}x${canvas.height} frames=${GPUBENCH} avg=${(tot / GPUBENCH).toFixed(2)}ms (update ${(up / GPUBENCH).toFixed(2)} + render-submit ${(rd / GPUBENCH).toFixed(2)} + gpu-wait ${(sync / GPUBENCH).toFixed(2)}) ${fmtInfo()} gpu=${gpu}`;
+    hud.textContent = msg; document.title = msg;
+  } catch (e) { window.__showErr(e.stack || String(e)); }
+} else if (!isNaN(T_AT)) {
+  try {
+    const dt = 1 / 60;
+    let t0 = performance.now(), nSteps = 0;
+    while (T < T_AT - 1e-9) { step(dt); T = Math.min(T_AT, T + dt); nSteps++; }
+    step(dt);
+    const t1 = performance.now();
+    r.render();
+    const t2 = performance.now();
+    // a second render so timings exclude shader compilation
+    const t3 = performance.now(); r.render(); const t4 = performance.now();
+    let msg = `READY ${fmtInfo()}  ff=${nSteps} steps ${(t1 - t0).toFixed(0)}ms (${((t1 - t0) / Math.max(1, nSteps + 1)).toFixed(2)} ms/update)  firstRender=${(t2 - t1).toFixed(0)}ms  render2=${(t4 - t3).toFixed(1)}ms`;
+    if (Q.has('dispose')) {
+      // dispose, then build a second renderer on a fresh canvas and render a frame with it
+      const mem = r.three.renderer.info.memory;
+      const before = `geos=${mem.geometries} tex=${mem.textures}`;
+      r.dispose();
+      const after = `geos=${mem.geometries} tex=${mem.textures}`;
+      const c2 = document.createElement('canvas');
+      c2.style.cssText = 'position:fixed;right:0;bottom:0;width:320px;height:180px';
+      document.body.appendChild(c2);
+      const r2 = createRenderer(c2);
+      r2.resize(320, 180);
+      r2.update(buildState(T), 1 / 60, [], ctx); r2.render();
+      r2.update(null, 1 / 60, [], ctx); r2.render();
+      msg += `  DISPOSED before[${before}] after[${after}] second-renderer-ok`;
+    }
+    hud.textContent = msg;
+    document.title = msg;
+  } catch (e) { window.__showErr(e.stack || String(e)); }
+} else {
+  let last = performance.now();
+  let frames = 0;
+  const loop = (now) => {
+    try {
+      let dt = Math.min(0.05, (now - last) / 1000); last = now;
+      T += dt;
+      const a = performance.now(); step(dt); const b = performance.now(); r.render(); const c = performance.now();
+      stats.n++; stats.up += b - a; stats.rd += c - b; stats.frame += dt * 1000;
+      if (stats.n >= 30) {
+        const msg = `fps=${(1000 / (stats.frame / stats.n)).toFixed(1)}  frame=${(stats.frame / stats.n).toFixed(2)}ms  update=${(stats.up / stats.n).toFixed(2)}ms  render(cpu)=${(stats.rd / stats.n).toFixed(2)}ms\n${fmtInfo()}`;
+        hud.textContent = msg;
+        if (!document.title.startsWith('ERROR')) document.title = msg.replace('\n', ' | ');
+        stats.n = stats.up = stats.rd = stats.frame = 0;
+      }
+      frames++;
+      if (BENCH && frames >= BENCH) { document.title = 'BENCH ' + hud.textContent.replace('\n', ' | '); return; }
+      requestAnimationFrame(loop);
+    } catch (e) { window.__showErr(e.stack || String(e)); }
+  };
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>

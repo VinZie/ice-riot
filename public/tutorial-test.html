@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICE RIOT · tutorial test</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0b0e16; color: #dfe6f5; font: 13px/1.35 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 8px 12px; background: #141a28; border-bottom: 1px solid #263048; }
+  header h1 { margin: 0; font: italic 900 17px/1 "Bahnschrift", "Arial Narrow", Impact, sans-serif; letter-spacing: .04em; color: #ffd400; }
+  .grp { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .grp > span { color: #8d9ab8; margin-right: 2px; }
+  button, label.tog { font: inherit; color: #dfe6f5; background: #222b40; border: 1px solid #36425f; border-radius: 4px; padding: 3px 8px; cursor: pointer; }
+  button:hover { background: #2c3752; }
+  button.on, input:checked + span { color: #111; background: #ffd400; border-color: #ffd400; }
+  .dev input { display: none; }
+  .dev span { display: inline-block; padding: 3px 9px; border: 1px solid #36425f; border-radius: 4px; background: #222b40; cursor: pointer; }
+  label.tog { display: inline-flex; gap: 4px; align-items: center; }
+  main { padding: 10px 12px; }
+  #stage { position: relative; width: 100%; max-width: calc((100vh - 130px) * 16 / 9); aspect-ratio: 16 / 9; margin: 0 auto; overflow: hidden;
+    background: radial-gradient(ellipse at 50% 40%, #1d2a44, #070910 75%); border: 1px solid #263048; border-radius: 6px; }
+  #stage.phone-p { max-width: 390px; aspect-ratio: 390 / 760; }
+  #stage.phone-l { max-width: 760px; aspect-ratio: 760 / 390; }
+  #rink { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #hud { position: absolute; left: 10px; top: 8px; right: 10px; display: flex; justify-content: space-between; gap: 10px; pointer-events: none;
+    font: 600 12px/1.3 ui-monospace, Consolas, monospace; color: #c9d4ee; text-shadow: 0 1px 2px #000; }
+  #hud b { color: #ffd400; }
+  #log { max-height: 7.5em; overflow: auto; margin: 8px auto 0; max-width: 1100px; font: 12px/1.4 ui-monospace, Consolas, monospace; color: #9fb0d4; white-space: pre-wrap; }
+  #gallery h2 { font: italic 900 16px/1 "Bahnschrift", "Arial Narrow", Impact, sans-serif; color: #ffd400; margin: 22px 0 10px; letter-spacing: .04em; }
+  .gal { display: grid; grid-template-columns: 110px repeat(3, minmax(0, 1fr)); gap: 10px; align-items: center; max-width: 1400px; margin: 0 auto; }
+  .gal .hd { color: #8d9ab8; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+  .gal .cell { display: flex; justify-content: center; padding: 14px 6px; border-radius: 6px; background: radial-gradient(ellipse at 50% 30%, #1d2a44, #0a0d15); min-height: 110px; align-items: center; }
+  /* static copies of the prompt: same look, normal flow */
+  .gal .cell .ir-tut-root { position: relative; left: auto; bottom: auto; transform: none; opacity: 1; visibility: visible; max-width: 100%; }
+  @media (max-width: 760px) { .gal { grid-template-columns: repeat(1, minmax(0, 1fr)); } .gal .hd.dv { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>ICE RIOT · TUTORIAL</h1>
+  <div class="grp dev" id="devs"><span>device</span></div>
+  <div class="grp" id="scen"><span>scenario</span></div>
+  <div class="grp">
+    <button id="all">play all</button>
+    <button id="resetBtn" title="tutorial.reset(): clear persisted show counts">reset counts</button>
+    <label class="tog" title="one long-lived tutorial with real limits / spacing, counts in localStorage"><input type="checkbox" id="persist"> persist</label>
+    <label class="tog"><input type="checkbox" id="enabled" checked> enabled</label>
+    <select id="frame" title="stage shape"><option value="">16:9</option><option value="phone-p">phone portrait</option><option value="phone-l">phone landscape</option></select>
+  </div>
+</header>
+<main>
+  <div id="stage"><canvas id="rink"></canvas><div id="hud"><span id="hudL"></span><span id="hudR"></span></div></div>
+  <div id="log"></div>
+  <section id="gallery"><h2>ALL HINTS × DEVICES (static)</h2><div class="gal" id="gal"></div></section>
+</main>
+<script type="module">
+import { createTutorial, hintMarkup, injectTutorialStyle, HINT_IDS, DEVICES } from './tutorial.js';
+import { PHASE, PSTATE, EVENT, RINK, TEAMS, glassPanels, nearestGlassPanel } from '/shared/constants.js';
+
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const ME = 1;
+const STEP = 1 / 30;
+const TEST_KEY = 'iceRiot.tutorial.test';
+
+// ---------------------------------------------------------------------------------------------
+// synthetic Snapshot-shaped states
+
+const clamp01 = (t) => (t < 0 ? 0 : t > 1 ? 1 : t);
+const mix = (a, b, t) => a + (b - a) * clamp01(t);
+function baseState() {
+  const P = (id, tm, x, z, extra = {}) => ({
+    id, tm, g: id % 4 === 3 ? 1 : 0, x, y: 0, z, vx: 0, vz: 0, f: tm === 0 ? 0 : Math.PI,
+    s: PSTATE.SKATE, sT: 0, tb: 1, fire: 0, ch: 0, c: 0, n: [12, 4, 27, 31, 19, 2, 88, 30][id], ...extra,
+  });
+  return {
+    tick: 5000, ph: PHASE.PLAY, phT: 0, per: 1, clk: 94, sc: [1, 1], teams: [0, 1],
+    p: [P(0, 0, -10, 0, { c: ME }), P(1, 0, -15, 7), P(2, 0, -15, -7), P(3, 0, -25.6, 0),
+      P(4, 1, 10, 5), P(5, 1, 10, -5), P(6, 1, 15, 0), P(7, 1, 25.6, 0)],
+    k: { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, o: -1 }, gl: [],
+  };
+}
+const put = (s, id, x, z, extra = {}) => Object.assign(s.p[id], { x, z }, extra);
+const face = (s, id, x, z) => { const p = s.p[id]; p.f = Math.atan2(z - p.z, x - p.x); };
+const carry = (s, id) => { const p = s.p[id]; s.k.o = id; s.k.x = p.x + Math.cos(p.f); s.k.z = p.z + Math.sin(p.f); };
+const puckAt = (s, x, z) => { s.k.o = -1; s.k.x = x; s.k.z = z; };
+
+// Each scenario: frame(t, at) -> { state, events }. at(T) is true on the frame that crosses time T.
+// pre: hints treated as already used up (isolated mode) so the scenario's own hint is the one shown.
+const SCENARIOS = [
+  { id: 'move', label: 'game start', dur: 7, pre: [], frame(t, at) {
+    const s = baseState(), ev = [];
+    if (t < 1.6) { s.ph = PHASE.FACEOFF; s.phT = 1.6 - t; put(s, 0, -1.3, 0); put(s, 4, 1.3, 0); puckAt(s, 0, 0); }
+    else {
+      const u = t - 1.6;
+      put(s, 0, -1.3 + u * 3, -u * 1.2); s.p[0].f = Math.atan2(-1.2, 3); put(s, 4, 1.3 - u * 0.5, u); puckAt(s, 0.4 + u * 1.5, 0.8 + u);
+      if (t > 4.6) s.p[0].tb = 1 - (t - 4.6) * 0.4;
+    }
+    if (at(0)) ev.push({ type: EVENT.PERIOD, period: 1 });
+    if (at(1.6)) ev.push({ type: EVENT.FACEOFF, x: 0, z: 0 });
+    return { state: s, events: ev };
+  } },
+  { id: 'shoot', label: 'first puck', dur: 6, pre: ['move'], frame(t, at) {
+    const s = baseState(), ev = [];
+    put(s, 0, -9 + Math.max(0, t - 1) * 4, 0);
+    if (t < 1) puckAt(s, mix(5, -8, t), mix(3, 0, t));
+    else if (t < 3.5) carry(s, 0);
+    else { const u = (t - 3.5) / 0.5; puckAt(s, mix(s.p[0].x + 1, 26.4, u), mix(0, 0.6, u)); if (at(3.5)) ev.push({ type: EVENT.SHOT, by: 0, power: 0.6, kind: 'wrist' }); }
+    return { state: s, events: ev };
+  } },
+  { id: 'pass', label: 'open teammate', dur: 6, pre: ['move', 'shoot'], frame(t, at) {
+    const s = baseState(), ev = [];
+    put(s, 0, -12 + t * 2, 1); put(s, 1, 2 + t, 6); put(s, 2, -16, -6);
+    put(s, 4, 13, -5); put(s, 5, 15, 7); put(s, 6, 18, 0);
+    if (t < 3) carry(s, 0);
+    else {
+      if (at(3)) ev.push({ type: EVENT.PASS, by: 0, to: 1 });
+      const u = (t - 3) / 0.6;
+      if (u < 1) puckAt(s, mix(-5, s.p[1].x - 1, u), mix(1, 6, u)); else { face(s, 1, 26, 0); carry(s, 1); }
+    }
+    return { state: s, events: ev };
+  } },
+  { id: 'deke', label: 'defender ahead', dur: 6, pre: ['move', 'shoot'], frame(t, at) {
+    const s = baseState(), ev = [];
+    const mx = -10 + t * 3;
+    put(s, 0, mx, 0.2); s.p[0].f = 0;
+    put(s, 4, Math.max(mx + 2.4, -2 - t * 2.5), t < 3 ? 0.4 : 0.4 + (t - 3) * 3); face(s, 4, mx, 0.2);
+    if (t >= 3 && t < 3.45) { s.p[0].s = PSTATE.DEKE; s.p[0].sT = t - 3; }
+    if (at(3)) ev.push({ type: EVENT.DEKE, by: 0 });
+    carry(s, 0);
+    return { state: s, events: ev };
+  } },
+  { id: 'onetimer', label: 'pass to me', dur: 5, pre: ['move'], frame(t, at) {
+    const s = baseState(), ev = [];
+    put(s, 0, 15, -3); face(s, 0, 26.6, 0);
+    put(s, 1, 5 + t * 1.5, 7); face(s, 1, 15, -3);
+    put(s, 4, 18, 6); put(s, 5, 20, -6); put(s, 6, 12, 2);
+    if (t < 0.8) carry(s, 1);
+    else if (t < 1.7) { const u = (t - 0.8) / 0.9; puckAt(s, mix(s.p[1].x + 0.8, 15.9, u), mix(6.4, -2.6, u)); }
+    else { const u = (t - 1.7) / 0.35; puckAt(s, mix(16, 26.5, u), mix(-2.6, 0.5, u)); }
+    if (at(0.8)) ev.push({ type: EVENT.PASS, by: 1, to: 0 });
+    if (at(1.7)) ev.push({ type: EVENT.SHOT, by: 0, power: 1, kind: 'onetimer' });
+    return { state: s, events: ev };
+  } },
+  { id: 'check', label: 'defend carrier', dur: 6, pre: ['move'], frame(t, at) {
+    const s = baseState(), ev = [];
+    const cx = 2 - Math.min(t, 3.4) * 3;
+    put(s, 4, cx, 1); s.p[4].f = Math.PI;
+    put(s, 0, -9 + Math.min(t, 3.4) * 1.2, 0.5); face(s, 0, cx, 1);
+    if (t < 3.4) carry(s, 4);
+    else { s.p[4].s = PSTATE.DOWN; puckAt(s, cx - 1.5 - (t - 3.4), 2 + (t - 3.4)); }
+    if (t >= 3.2 && t < 3.6) s.p[0].s = PSTATE.CHECK;
+    if (at(3.4)) ev.push({ type: EVENT.HIT, by: 0, target: 4, power: 0.6, big: false, x: cx, z: 1 });
+    return { state: s, events: ev };
+  } },
+  { id: 'glass', label: 'carrier on boards', dur: 6, pre: ['move', 'check'], frame(t, at) {
+    const s = baseState(), ev = [];
+    const cx = 4 - Math.min(t, 3) * 3;
+    put(s, 4, cx, -11.6); s.p[4].f = Math.PI;
+    put(s, 0, mix(-10, cx + 0.8, t / 3), mix(-5, -10.4, t / 3)); face(s, 0, cx, -11.6);
+    if (t < 3) carry(s, 4);
+    else {
+      const panel = nearestGlassPanel(cx, -RINK.halfWidth);
+      s.gl = [panel]; s.p[4].s = PSTATE.DOWN; s.p[0].tb = 0.4; puckAt(s, cx - 1 - (t - 3) * 2, -10.5);
+      if (at(3)) ev.push({ type: EVENT.HIT, by: 0, target: 4, power: 1, big: true, x: cx, z: -11.6 }, { type: EVENT.GLASS, panel, by: 0, target: 4, x: cx, z: -13 });
+    }
+    return { state: s, events: ev };
+  } },
+  { id: 'switch', label: 'too far away', dur: 6, pre: ['move'], frame(t, at) {
+    const s = baseState(), ev = [];
+    puckAt(s, mix(-19, -24, t / 4), mix(8, 4, t / 4));
+    put(s, 0, 12, -2); face(s, 0, -20, 4);
+    put(s, 1, mix(-16, -21, t / 4), 5); face(s, 1, s.k.x, s.k.z);
+    put(s, 2, 2, -6); put(s, 5, mix(-12, -20, t / 4), 7); face(s, 5, s.k.x, s.k.z);
+    if (t >= 3) { s.p[0].c = 0; s.p[1].c = ME; }
+    if (at(3)) ev.push({ type: EVENT.SWITCH, client: ME, from: 0, to: 1 });
+    return { state: s, events: ev };
+  } },
+  { id: 'fire', label: 'catch fire', dur: 6, pre: ['move'], frame(t, at) {
+    const s = baseState(), ev = [];
+    put(s, 0, 18 - t, 3); face(s, 0, 0, 0); s.sc = [3, 1];
+    if (t >= 0.5) s.p[0].fire = 1;
+    if (at(0.5)) ev.push({ type: EVENT.FIRE, player: 0, on: true });
+    return { state: s, events: ev };
+  } },
+  { id: 'overtime', label: 'overtime', dur: 6, pre: ['move'], frame(t, at) {
+    const s = baseState(), ev = [];
+    s.per = 4; s.clk = 120; s.sc = [2, 2];
+    if (t < 1.6) { s.ph = PHASE.FACEOFF; s.phT = 1.6 - t; put(s, 0, -1.3, 0); put(s, 4, 1.3, 0); puckAt(s, 0, 0); }
+    else { put(s, 0, -1.3 + (t - 1.6) * 2, 0); puckAt(s, (t - 1.6) * 3, -(t - 1.6)); }
+    if (at(0)) ev.push({ type: EVENT.PERIOD, period: 4 });
+    return { state: s, events: ev };
+  } },
+];
+
+// ---------------------------------------------------------------------------------------------
+// tutorial instance(s)
+
+const memStorage = (seed) => {
+  const m = new Map();
+  if (seed && seed.length) m.set(TEST_KEY, JSON.stringify({ v: 1, n: Object.fromEntries(seed.map((id) => [id, 99])), done: {} }));
+  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) };
+};
+let device = DEVICES.includes(params.get('device')) ? params.get('device') : 'keyboard';
+let tut = null, persistent = null;
+function tutorialFor(sc) {
+  if ($('persist').checked) {
+    if (tut && tut !== persistent) tut.dispose();
+    persistent ||= createTutorial({ container: $('stage'), storageKey: TEST_KEY, device });
+    tut = persistent;
+  } else {
+    if (tut) tut.dispose();
+    persistent = null;
+    tut = createTutorial({ container: $('stage'), storage: memStorage(sc.pre), storageKey: TEST_KEY, device });
+  }
+  tut.setDevice(device);
+  tut.setEnabled($('enabled').checked);
+  return tut;
+}
+
+// ---------------------------------------------------------------------------------------------
+// playback
+
+let run = null;          // { sc, t, queue }
+let lastVisible = null, lastFrame = null;
+const logLines = [];
+function log(msg) { logLines.push(msg); if (logLines.length > 60) logLines.shift(); $('log').textContent = logLines.join('\n'); $('log').scrollTop = 1e9; }
+
+function start(sc, queue = []) {
+  run = { sc, t: 0, prevT: -1, queue };
+  lastVisible = null;
+  tutorialFor(sc);
+  for (const b of document.querySelectorAll('#scen button')) b.classList.toggle('on', b.dataset.id === sc.id);
+  log(`▶ ${sc.id} (${device})`);
+}
+function step(dt) {
+  if (!run) return;
+  const { sc } = run;
+  run.t += dt;
+  const at = (T) => run.prevT < T && T <= run.t;
+  const { state, events } = sc.frame(run.t, at);
+  run.prevT = run.t;
+  const vis = tut.update(state, events, { myId: ME }, dt);
+  for (const e of events) log(`  ${run.t.toFixed(2)}s event ${e.type}${e.by != null ? ' by ' + e.by : ''}${e.to != null ? ' to ' + e.to : ''}`);
+  if (vis !== lastVisible) { log(`  ${run.t.toFixed(2)}s hint ${vis ? 'SHOW ' + vis : 'hide ' + lastVisible}`); lastVisible = vis; }
+  lastFrame = { state, vis, t: run.t, sc: sc.id };
+  if (run.t >= sc.dur) {
+    const next = run.queue.shift();
+    if (next) start(next, run.queue); else run = null;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// rink sketch (top-down schematic so the scripted situation is readable)
+
+const PANELS = glassPanels();
+const hex = (n) => '#' + n.toString(16).padStart(6, '0');
+function draw() {
+  const cv = $('rink'), g = cv.getContext('2d');
+  const W = cv.clientWidth, H = cv.clientHeight, dpr = Math.min(2, devicePixelRatio || 1);
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const L = RINK.halfLength, Wd = RINK.halfWidth;
+  const sc = Math.min((W - 40) / (2 * L), (H - 70) / (2 * Wd));
+  const ox = W / 2, oz = H / 2 - 6;
+  const X = (x) => ox + x * sc, Z = (z) => oz + z * sc;
+  // ice
+  g.beginPath(); g.roundRect(X(-L), Z(-Wd), 2 * L * sc, 2 * Wd * sc, RINK.cornerRadius * sc);
+  g.fillStyle = '#dfeaf3'; g.fill(); g.lineWidth = 4; g.strokeStyle = '#f5f7fb'; g.stroke();
+  g.save(); g.clip();
+  const vline = (x, c, w) => { g.beginPath(); g.moveTo(X(x), Z(-Wd)); g.lineTo(X(x), Z(Wd)); g.strokeStyle = c; g.lineWidth = w; g.stroke(); };
+  vline(0, '#d0202f', 4); vline(-RINK.blueLineX, '#1f5fd6', 4); vline(RINK.blueLineX, '#1f5fd6', 4);
+  vline(-RINK.goalLineX, '#d0202f', 1.5); vline(RINK.goalLineX, '#d0202f', 1.5);
+  g.beginPath(); g.arc(X(0), Z(0), RINK.centerCircleR * sc, 0, Math.PI * 2); g.strokeStyle = '#1f5fd6'; g.lineWidth = 1.5; g.stroke();
+  for (const sx of [-1, 1]) {
+    g.beginPath(); g.arc(X(sx * RINK.goalLineX), Z(0), RINK.creaseRadius * sc, sx > 0 ? Math.PI / 2 : -Math.PI / 2, sx > 0 ? Math.PI * 1.5 : Math.PI / 2);
+    g.fillStyle = 'rgba(80,150,255,.35)'; g.fill();
+    g.fillStyle = '#c8102e'; g.fillRect(X(sx > 0 ? RINK.goalLineX : -RINK.goalLineX - RINK.goalDepth), Z(-RINK.goalHalfWidth), RINK.goalDepth * sc, 2 * RINK.goalHalfWidth * sc);
+  }
+  g.restore();
+  const st = lastFrame && lastFrame.state;
+  if (!st) return;
+  for (const i of st.gl || []) { const p = PANELS[i]; g.beginPath(); g.arc(X(p.x), Z(p.z), 9, 0, Math.PI * 2); g.fillStyle = 'rgba(255,80,40,.9)'; g.fill(); g.fillStyle = '#fff'; g.font = 'bold 10px sans-serif'; g.fillText('GLASS', X(p.x) - 15, Z(p.z) - 12); }
+  const r = Math.max(6, PLAYER_R * sc);
+  for (const p of st.p) {
+    const T = TEAMS[st.teams[p.tm]];
+    const x = X(p.x), z = Z(p.z);
+    if (p.fire) { g.beginPath(); g.arc(x, z, r + 7, 0, Math.PI * 2); g.fillStyle = 'rgba(255,110,0,.55)'; g.fill(); }
+    g.beginPath();
+    if (p.g) g.rect(x - r, z - r, 2 * r, 2 * r); else g.arc(x, z, r, 0, Math.PI * 2);
+    g.fillStyle = p.s === PSTATE.DOWN ? '#777' : hex(T.colors.primary); g.fill();
+    g.lineWidth = p.c === ME ? 3.5 : 1.5; g.strokeStyle = p.c === ME ? '#fff' : hex(T.colors.secondary); g.stroke();
+    g.beginPath(); g.moveTo(x, z); g.lineTo(x + Math.cos(p.f) * r * 1.9, z + Math.sin(p.f) * r * 1.9); g.strokeStyle = '#111'; g.lineWidth = 2; g.stroke();
+    g.fillStyle = '#111'; g.font = `bold ${Math.round(r * 0.9)}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(p.n), x, z + 0.5);
+    if (p.c === ME) { g.fillStyle = '#fff'; g.font = 'bold 11px sans-serif'; g.fillText('YOU', x, z - r - 9); }
+  }
+  g.beginPath(); g.arc(X(st.k.x), Z(st.k.z), Math.max(3, 0.25 * sc), 0, Math.PI * 2); g.fillStyle = '#000'; g.fill();
+  g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+  const phName = Object.keys(PHASE).find((k) => PHASE[k] === st.ph) || '?';
+  $('hudL').innerHTML = `scenario <b>${lastFrame.sc}</b> · t=${lastFrame.t.toFixed(2)}s · ${phName} · per ${st.per}`;
+  $('hudR').innerHTML = `device <b>${device}</b> · hint <b>${lastFrame.vis || '-'}</b>`;
+}
+const PLAYER_R = 0.75;
+
+// ---------------------------------------------------------------------------------------------
+// controls
+
+for (const d of DEVICES) {
+  const l = document.createElement('label');
+  l.innerHTML = `<input type="radio" name="dev" value="${d}"${d === device ? ' checked' : ''}><span>${d}</span>`;
+  l.querySelector('input').addEventListener('change', () => { device = d; if (tut) tut.setDevice(d); log(`device -> ${d}`); });
+  $('devs').appendChild(l);
+}
+for (const sc of SCENARIOS) {
+  const b = document.createElement('button');
+  b.textContent = sc.label; b.dataset.id = sc.id; b.title = `expected hint: ${sc.id}`;
+  b.addEventListener('click', () => start(sc));
+  $('scen').appendChild(b);
+}
+$('all').addEventListener('click', () => { const q = SCENARIOS.slice(); start(q.shift(), q); });
+$('resetBtn').addEventListener('click', () => { if (persistent) persistent.reset(); try { localStorage.removeItem(TEST_KEY); } catch {} log('counts reset'); });
+$('enabled').addEventListener('change', (e) => { if (tut) tut.setEnabled(e.target.checked); });
+$('persist').addEventListener('change', () => { log(`persist ${$('persist').checked ? 'on (real limits, localStorage)' : 'off (fresh instance per scenario)'}`); });
+$('frame').addEventListener('change', (e) => { $('stage').className = e.target.value; });
+
+// gallery: every hint on every device, static
+injectTutorialStyle(document);
+{
+  const gal = $('gal');
+  gal.insertAdjacentHTML('beforeend', '<div class="hd"></div>' + DEVICES.map((d) => `<div class="hd dv">${d}</div>`).join(''));
+  for (const id of HINT_IDS) {
+    gal.insertAdjacentHTML('beforeend', `<div class="hd">${id}</div>` +
+      DEVICES.map((d) => `<div class="cell"><div class="ir-tut-root ir-tut-on">${hintMarkup(id, d)}</div></div>`).join(''));
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// main loop, or ?shot=<scenario>: step synchronously until that hint is up, then freeze (screenshots)
+
+const shot = params.get('shot');
+const frameSel = params.get('frame');
+if (frameSel) { $('stage').className = frameSel; $('frame').value = frameSel; }
+if (params.get('gallery')) $('gallery').scrollIntoView();
+const shotSc = SCENARIOS.find((s) => s.id === shot);
+if (shotSc) {
+  start(shotSc);
+  let shownAt = -1;
+  for (let i = 0; i < 600 && run; i++) {
+    step(STEP);
+    if (shownAt < 0 && lastFrame.vis === shotSc.id) shownAt = run.t;
+    if (shownAt >= 0 && run.t >= shownAt + 0.35) break;
+  }
+  run = null;
+  draw();
+  addEventListener('resize', draw);
+} else {
+  let last = performance.now();
+  const loop = (now) => {
+    const dt = Math.min(0.1, Math.max(0, (now - last) / 1000)); last = now;
+    if (run) step(dt);
+    draw();
+    requestAnimationFrame(loop);
+  };
+  start(SCENARIOS.find((s) => s.id === params.get('scenario')) || SCENARIOS[0]);
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
