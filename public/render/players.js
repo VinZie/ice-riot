@@ -8,6 +8,7 @@ import { TEAMS, PSTATE, PHASE } from '/shared/constants.js';
 import { PartBuilder, lin, smoothstep, clamp01 } from './util.js';
 import { makeCanvas, canvasTex, drawNumberAtlas, makeNameTag, makeRingTexture, makeRadialTexture, makeToughIcon } from './textures.js';
 import { FIGHT_TRIGGER } from '/shared/fight.js';
+import { createSkaterModels } from './skater-models.js';
 
 // "Tough guys" (checking >= this) are the only skaters who can start a fight; they get a fist badge.
 const TOUGH_CHK = (FIGHT_TRIGGER && FIGHT_TRIGGER.minChk) || 6;
@@ -386,10 +387,22 @@ export function createPlayers(scene, mirror, fx, track) {
     }
   }
 
+  // Skaters: the animated player model once it has loaded (render/skater-models.js); until then, or
+  // if it can't load, the procedural skaters below. Goalies are always procedural.
+  const models = createSkaterModels(group, mirror, track, SKIN_TONES);
+  models.load().then(() => {
+    // stop drawing the procedural skaters
+    for (const pt of parts) for (let i = 0; i < pt.count; i++) { const o = pt.owner[i]; if (o >= 0 && o % 4 !== 3) pt.mesh.setMatrixAt(i, _zero); }
+    for (const id of [0, 1, 2, 4, 5, 6]) numMesh.setMatrixAt(id, _zero);
+    for (const pt of parts) pt.mesh.instanceMatrix.needsUpdate = true;
+    numMesh.instanceMatrix.needsUpdate = true;
+  }).catch((e) => console.warn('ICE RIOT: skater models unavailable, using the procedural skaters.', e));
+
   let teamsCur = [0, 1];
   const tmpc = [0, 0, 0];
   function setTeams(h, a) {
     teamsCur = [h, a];
+    models.setTeams(h, a);
     for (const pt of parts) {
       const aP = pt.geo.attributes.iP.array, aS = pt.geo.attributes.iS.array, aA = pt.geo.attributes.iA.array, aK = pt.geo.attributes.iK.array;
       for (let i = 0; i < pt.count; i++) {
@@ -424,6 +437,7 @@ export function createPlayers(scene, mirror, fx, track) {
     blobs.instanceMatrix.needsUpdate = true;
     for (const pv of pvs) { pv.ring.visible = pv.tag.visible = pv.chargeGlow.visible = pv.fireGlow.visible = pv.tough.visible = false; pv.visible = false; pv.inited = false; }
     for (const ar of arrows) ar.a.visible = ar.o.visible = false;
+    models.hideAll();
   }
 
   // ------------------------------------------------------------------ pose targets
@@ -633,6 +647,20 @@ export function createPlayers(scene, mirror, fx, track) {
     const couch = ctx && ctx.couchIds;
     const names = (ctx && ctx.names) || {};
     let arrowsUsed = 0;
+    // faceoff: on each team the skater nearest the puck takes the draw
+    const takers = [-1, -1];
+    if (models.ready) {
+      models.tick(dt);
+      if (state.ph === PHASE.FACEOFF && k) {
+        const best = [Infinity, Infinity];
+        for (let id = 0; id < 8; id++) {
+          const p = pl[id];
+          if (!p || id % 4 === 3) continue;
+          const t = id < 4 ? 0 : 1, d = Math.hypot(p.x - k.x, p.z - k.z);
+          if (d < 3 && d < best[t]) { best[t] = d; takers[t] = id; }
+        }
+      }
+    }
     for (let id = 0; id < 8; id++) {
       const pv = pvs[id];
       const p = pl[id];
@@ -663,7 +691,18 @@ export function createPlayers(scene, mirror, fx, track) {
         const P0 = pv.pose, T0 = pv.target;
         for (let i = 0; i < NP; i++) P0[i] += (T0[i] - P0[i]) * a;
       }
-      evalRig(pv, p, time);
+      let modelled = false;
+      if (!pv.isG && models.ready) {
+        try {
+          models.update(pv, p, { dt, ph: state.ph, faceoffTaker: takers[pv.team] === id });
+          _fwd.set(Math.cos(f), 0, Math.sin(f));
+          modelled = true;
+        } catch (e) {
+          console.warn('ICE RIOT: skater models failed, back to the procedural skaters.', e);
+          models.disable();
+        }
+      }
+      if (!modelled) evalRig(pv, p, time);
 
       // blob shadow
       const air = Math.max(0, p.y || 0);
@@ -770,6 +809,7 @@ export function createPlayers(scene, mirror, fx, track) {
     for (const pt of parts) for (let i = 0; i < pt.count; i++) if (pt.owner[i] === pv.id) pt.mesh.setMatrixAt(i, _zero);
     numMesh.setMatrixAt(pv.id, _zero);
     blobs.setMatrixAt(pv.id, _zero);
+    models.hide(pv.id);
   }
 
   function setPuckShadow(x, z, y, visible) {
@@ -788,6 +828,11 @@ export function createPlayers(scene, mirror, fx, track) {
     setBlobOpacity(v) { blobMat.opacity = v; },
     bladeOf(id) { const pv = pvs[id]; return pv && pv.visible ? pv.bladeW : null; },
     headOf(id) { const pv = pvs[id]; return pv && pv.visible ? pv.headW : null; },
-    dispose() { for (const t of tagCache.values()) t.dispose(); tagCache.clear(); },
+    /** 'pass' / 'shot' events pick the skater models' pass and shot clips. */
+    onEvent(type, e) { models.onEvent(type, e); },
+    /** Video quality: 'low' drops the skater models' ice reflections. */
+    setQuality(q) { models.setReflections(q !== 'low'); },
+    get modelsReady() { return models.ready; },
+    dispose() { for (const t of tagCache.values()) t.dispose(); tagCache.clear(); models.dispose(); },
   };
 }

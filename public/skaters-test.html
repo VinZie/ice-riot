@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICE RIOT skater models test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f18; color: #dfe6f2; font: 13px system-ui, sans-serif; overflow: hidden; }
+  #info { position: fixed; left: 12px; bottom: 10px; color: #9aa6ba; }
+  .lbl { position: fixed; transform: translate(-50%, 0); font-weight: 600; font-size: 12px; color: #e8eef8; text-shadow: 0 1px 2px #000; white-space: nowrap; }
+</style>
+<script type="importmap">{"imports":{"three":"/vendor/three.module.min.js"}}</script>
+</head>
+<body>
+<div id="info">Loading…</div>
+<script type="module">
+// Dev page for render/skater-models.js: one skater per game state in a row, driven by synthetic
+// snapshot players, so every clip mapping can be checked at a glance.
+//   /skaters-test.html            live
+//   /skaters-test.html?t=1.2      simulate 1.2 s deterministically, then hold (for screenshots)
+//   &team=2&cam=back              team colours (TEAMS index) / view from behind
+import * as THREE from 'three';
+import { PSTATE, PHASE } from '/shared/constants.js';
+import { createSkaterModels } from '/render/skater-models.js';
+
+const q = new URLSearchParams(location.search);
+const T = q.has('t') ? Number(q.get('t')) : null;
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0f18);
+scene.add(new THREE.HemisphereLight(0xe4ecff, 0x7c8aa0, 1.1));
+const key = new THREE.DirectionalLight(0xfff8f0, 2.4);
+key.position.set(-4, 12, 8); key.castShadow = true; key.shadow.mapSize.set(2048, 2048);
+Object.assign(key.shadow.camera, { left: -12, right: 12, top: 6, bottom: -6 });
+scene.add(key);
+const ice = new THREE.Mesh(new THREE.PlaneGeometry(40, 14), new THREE.MeshStandardMaterial({ color: 0xe9f0f6, roughness: 0.2 }));
+ice.rotation.x = -Math.PI / 2; ice.receiveShadow = true; scene.add(ice);
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 100);
+const back = q.get('cam') === 'back';
+camera.position.set(0, 2.4, back ? -14 : 14); camera.lookAt(0, 0.9, 0);
+
+const group = new THREE.Group(), mirror = new THREE.Group();
+scene.add(group);
+const models = createSkaterModels(group, mirror, (t) => t, [0xf1c7a5, 0xd9a07a, 0xa8714c, 0x6e4529, 0xe8b893, 0x8d5a3b]);
+const team = Number(q.get('team') || 0);
+models.setTeams(team, (team + 1) % 6);
+
+// One skater per case: state, extra fields as a function of time.
+const CASES = [
+  ['idle', () => ({ s: PSTATE.SKATE })],
+  ['skate', () => ({ s: PSTATE.SKATE, v: 6 })],
+  ['sprint', (t) => ({ s: PSTATE.SKATE, v: 11, tb: 1 - (t % 3) * 0.3 })],
+  ['charge', (t) => ({ s: PSTATE.CHARGE, sT: t % 2, ch: Math.min(1, (t % 2) / 0.8) })],
+  ['shoot', (t) => (t % 1.6 < 0.6 ? { s: PSTATE.CHARGE, sT: t % 1.6, ch: Math.min(1, (t % 1.6) / 0.5) } : { s: t % 1.6 < 0.85 ? PSTATE.SHOOT : PSTATE.SKATE, sT: (t % 1.6) - 0.6 })],
+  ['check', (t) => ({ s: t % 1.4 < 0.5 ? PSTATE.CHECK : PSTATE.SKATE, sT: t % 1.4, v: 3 })],
+  ['poke', (t) => ({ s: t % 1.2 < 0.3 ? PSTATE.POKE : PSTATE.SKATE, sT: t % 1.2 })],
+  ['deke', (t) => ({ s: t % 1.5 < 0.45 ? PSTATE.DEKE : PSTATE.SKATE, sT: t % 1.5, v: 4 })],
+  ['down', (t) => ({ s: t % 3 < 1.8 ? PSTATE.DOWN : PSTATE.SKATE, sT: t % 3 })],
+  ['celebrate', () => ({ s: PSTATE.CELEBRATE })],
+];
+const labels = CASES.map(([name]) => { const d = document.createElement('div'); d.className = 'lbl'; d.textContent = name; document.body.appendChild(d); return d; });
+const pvs = CASES.map((_, i) => ({ id: i, spin: 0, turn: 0, hips: new THREE.Matrix4(), headW: new THREE.Vector3(), bladeW: new THREE.Vector3() }));
+const GAP = 1.45;
+let time = 0;
+
+function step(dt) {
+  time += dt;
+  models.tick(dt);
+  CASES.forEach(([name, fn], i) => {
+    const st = fn(time), v = st.v || 0, x = (i - (CASES.length - 1) / 2) * GAP;
+    const pv = pvs[i];
+    pv.spin = st.s === PSTATE.DEKE ? -Math.min(1, st.sT / 0.38) * Math.PI * 2 : 0;
+    // everyone faces +Z (the front camera; the back camera sits at -Z); velocity only drives the clip choice
+    const p = { x, y: 0, z: 0, vx: 0, vz: v, f: Math.PI / 2, s: st.s, sT: st.sT || 0, ch: st.ch || 0, tb: st.tb ?? 1, n: 10 + i };
+    models.update(pv, p, { dt, ph: PHASE.PLAY, faceoffTaker: false });
+  });
+}
+function draw() {
+  renderer.render(scene, camera);
+  CASES.forEach((_, i) => {
+    const x = (i - (CASES.length - 1) / 2) * GAP;
+    const s = new THREE.Vector3(x, 0.05, 0).project(camera);
+    labels[i].style.left = `${(s.x * 0.5 + 0.5) * innerWidth}px`; labels[i].style.top = `${(-s.y * 0.5 + 0.5) * innerHeight + 10}px`;
+  });
+}
+const info = document.getElementById('info');
+models.load().then(() => {
+  info.textContent = 'skater models loaded';
+  if (T != null) {
+    for (let t = 0; t < T; t += 1 / 60) step(1 / 60);
+    info.textContent = `t = ${T.toFixed(2)} s`;
+    renderer.setAnimationLoop(draw);                 // hold the frame
+  } else {
+    const clock = new THREE.Clock();
+    renderer.setAnimationLoop(() => { step(Math.min(clock.getDelta(), 0.05)); draw(); });
+  }
+}).catch((e) => { info.textContent = 'load failed: ' + e.message; console.error(e); });
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+</script>
+</body>
+</html>

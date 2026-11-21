@@ -128,7 +128,11 @@ export function createRenderer(canvas, opts = {}) {
         lastGoalT = time;
         break;
       }
+      case EVENT.PASS:
+        players.onEvent('pass', e);
+        break;
       case EVENT.SHOT: {
+        players.onEvent('shot', e);
         const p = playerOf(state, e.by);
         if (p && (p.fire === 1 || p.fire === true)) fx.puckFire();
         const pw = num(e.power, 0.5);
@@ -301,7 +305,7 @@ export function createRenderer(canvas, opts = {}) {
   // Dynamic resolution safety net: if frames are consistently slow (>19 ms avg over 60 frames, twice in a
   // row) lower the pixel ratio a notch; raise it again when there is headroom. Effective ratio stays >= 0.75.
   // Disable with createRenderer(canvas, { dynamicResolution: false }).
-  const dyn = { on: opts.dynamicResolution !== false, last: 0, acc: 0, n: 0, slow: 0, fast: 0, scale: 1, shadowOff: false };
+  const dyn = { on: opts.dynamicResolution !== false, last: 0, acc: 0, n: 0, slow: 0, fast: 0, scale: 1, shadowOff: false, mirrorOff: false };
   let quality = '', prCap = 2;
   const basePR = () => Math.min(window.devicePixelRatio || 1, prCap);
   function applyPR() { renderer.setPixelRatio(basePR() * dyn.scale); }
@@ -312,7 +316,8 @@ export function createRenderer(canvas, opts = {}) {
   }
   /**
    * ctx.video.quality: 'high' = DPR<=2 + shadows; 'medium' = DPR<=1.5 + shadows; 'low' = DPR 1, no shadows,
-   * half particles + crowd; 'auto' (default) = DPR<=2 + shadows with the adaptive fallback below.
+   * no skater reflections, half particles + crowd; 'auto' (default) = DPR<=2 + shadows with the adaptive
+   * fallback below.
    */
   function setQuality(q) {
     if (q !== 'high' && q !== 'medium' && q !== 'low') q = 'auto';
@@ -325,6 +330,7 @@ export function createRenderer(canvas, opts = {}) {
     setShadows(q === 'low' ? false : q === 'auto' ? !dyn.shadowOff : true);
     fx.setDensity(q === 'low' ? 0.5 : 1);
     arena.setCrowdDensity(q === 'low' ? 0.5 : 1);
+    players.setQuality(q === 'auto' && dyn.mirrorOff ? 'low' : q);
     applyPR();
   }
   function tickDyn() {
@@ -341,6 +347,8 @@ export function createRenderer(canvas, opts = {}) {
         dyn.slow = 0;
         // tier 1: drop the shadow map (one-time shader rebuild), blob shadows carry the grounding
         if (key.castShadow) { dyn.shadowOff = true; setShadows(false); }
+        // tier 2: drop the skater models' ice reflections (a second skinned pass)
+        else if (!dyn.mirrorOff && players.modelsReady) { dyn.mirrorOff = true; players.setQuality('low'); }
         else if (dyn.scale > minScale) { dyn.scale = Math.max(minScale, dyn.scale - 0.15); applyPR(); }
       }
     } else if (avg < 15) {

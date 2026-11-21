@@ -22,6 +22,7 @@ export const MIME = {
   '.ico': 'image/x-icon',
   '.wasm': 'application/wasm',
   '.woff2': 'font/woff2',
+  '.glb': 'model/gltf-binary',
 };
 
 // Windows device names would open a device instead of a file.

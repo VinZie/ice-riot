@@ -91,6 +91,9 @@ network is classified as Public, either:
 ## Features
 
 - **3-on-3 + AI goalies**, drop-in/drop-out: empty slots are AI, friends can join mid-game.
+- **Animated skater models**: rigged players with team colours, back numbers, varied skin and hair, a
+  hockey "flow" with spring-physics hair, and clips for skating, sprinting, shots (wrist, slap,
+  one-timer), passes, checks, pokes, dekes, falls, faceoffs and celebrations (goalies stay procedural).
 - **Hits & glass**: turbo body checks, glass that shatters, and the occasional **fight** mini-game
   (J jab · L haymaker · K block · Shift dodge; the winner catches fire).
 - **Instant goal replay** (any button skips), synthesized **arena music**, crowd and SFX.
@@ -144,6 +147,12 @@ node test/bots.js --url ws://127.0.0.1:8765/ws --bots 5 --start   # bot swarm ag
 node test/netem-proxy.js --listen 9000 --target 127.0.0.1:8765 --profile derp   # simulate a slow tailnet path
 node server/server.js --sim test/fake-sim.js   # run the server without the real sim
 ```
+
+Skater models: `public/models/skater.glb` (+ `skater.physics.json` for the hair) is built in Múcaro by
+`blenderremake/testingmcp/hockey/build-game.mjs` with `DETAIL=0.35` (about 61k triangles; `DETAIL=1`
+gives the ~400k hero model). `public/render/skater-models.js` drives it from the snapshot; open
+`/skaters-test.html` on a running server to see every state's animation side by side. If the model
+can't load, the procedural skaters are used.
 
 Layout: `server/` (HTTP + hand-rolled WebSocket + rooms + game loop + Tailscale helper),
 `shared/` (constants + the authoritative simulation, also loaded by the browser), `public/`
