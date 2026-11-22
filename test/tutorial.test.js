@@ -2,8 +2,8 @@
 
 import {
   createTutorialCore, createTutorial, analyze, openTeammateAhead, opponentInFront, nearOpponentCarrier,
-  carrierNearBoards, aiTeammateNearerPuck, passIncoming, hintMarkup, glyphHTML, prettyKey,
-  HINTS, HINT_ORDER, HINT_IDS, TUNING, DEVICES,
+  carrierNearBoards, aiTeammateNearerPuck, passIncoming, hintMarkup, glyphHTML, prettyKey, mouseButton, hintKind,
+  HINTS, HINT_ORDER, HINT_IDS, TUNING, DEVICES, TUTORIAL_CSS,
 } from '../public/tutorial.js';
 import { PHASE, PSTATE, EVENT } from '../shared/constants.js';
 
@@ -507,43 +507,168 @@ test('hint definitions are consistent', () => {
 
 console.log('tutorial: markup');
 
+// classic all-keyboard bindings (what a player who rebinds away from the mouse gets)
+const KEYS_ONLY = (btn) => ({ shoot: 'KeyJ', pass: 'KeyK', action: 'KeyL', turbo: 'ShiftLeft' })[btn] ?? null;
+// visible text of a card: tags stripped, entities decoded
+const textOf = (html) => html.replace(/<[^>]*>/g, ' ').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+
 test('glyphs per device', () => {
+  // default bindings: shoot = left click, pass = right click, deke = L, turbo = L-Shift
   const k = hintMarkup('shoot', 'keyboard');
-  ok(k.includes('ir-tut-key') && k.includes('<b>J</b>'), 'keyboard J');
-  ok(hintMarkup('move', 'keyboard').includes('ir-tut-wasd'), 'WASD cluster');
-  ok(hintMarkup('move', 'keyboard').includes('<b>SHIFT</b>'), 'shift');
-  ok(hintMarkup('pass', 'keyboard').includes('<b>K</b>'));
-  ok(hintMarkup('deke', 'keyboard').includes('<b>L</b>'));
-  ok(hintMarkup('switch', 'keyboard').includes('<b>K</b>'));
+  ok(k.includes('ir-tut-mouse ir-tut-mouse-l') && k.includes('<b>Left click</b>'), 'default shoot = left click');
+  ok(hintMarkup('pass', 'keyboard').includes('ir-tut-mouse-r') && hintMarkup('pass', 'keyboard').includes('<b>Right click</b>'), 'default pass = right click');
+  ok(hintMarkup('switch', 'keyboard').includes('<b>Right click</b>'), 'switch = pass button');
+  ok(hintMarkup('deke', 'keyboard').includes('<b>L</b>'), 'deke L keycap');
+  ok(hintMarkup('move', 'keyboard').includes('ir-tut-wasd'), 'WASD row');
+  ok(hintMarkup('move', 'keyboard').includes('<b>L-Shift</b>'), 'L-Shift');
+  ok(hintMarkup('shoot', 'keyboard', KEYS_ONLY).includes('<b>J</b>') && !hintMarkup('shoot', 'keyboard', KEYS_ONLY).includes('ir-tut-mouse'), 'keyboard J');
+  ok(hintMarkup('pass', 'keyboard', KEYS_ONLY).includes('<b>K</b>'), 'keyboard K');
   const g = hintMarkup('check', 'gamepad');
   ok(g.includes('ir-tut-pad-a') && g.includes('ir-tut-bumper') && g.includes('ir-tut-pad-b'), 'gamepad A, RB, B');
+  ok(g.includes('>RB<') && g.includes('>A<') && g.includes('>B<'), 'gamepad letters');
   ok(hintMarkup('switch', 'gamepad').includes('ir-tut-pad-x'), 'gamepad X');
   ok(hintMarkup('move', 'gamepad').includes('ir-tut-stick'), 'left stick');
-  ok(hintMarkup('shoot', 'touch').includes('<b>SHOOT</b>'), 'touch SHOOT');
-  ok(hintMarkup('check', 'touch').includes('<b>CHECK</b>') && hintMarkup('check', 'touch').includes('<b>POKE</b>'), 'touch CHECK/POKE (context labels)');
-  ok(hintMarkup('switch', 'touch').includes('<b>SWITCH</b>'), 'touch SWITCH');
-  ok(hintMarkup('move', 'touch').includes('ir-tut-joy'), 'touch stick');
-  ok(hintMarkup('onetimer', 'keyboard').includes('ir-tut-big') && hintMarkup('onetimer', 'keyboard').includes('ir-tut-urgent'), 'big one-timer prompt');
+  ok(hintMarkup('shoot', 'touch').includes('<b>Shoot</b>') && hintMarkup('shoot', 'touch').includes('ir-tut-tbtn-shoot'), 'touch Shoot');
+  ok(hintMarkup('check', 'touch').includes('<b>Check</b>') && hintMarkup('check', 'touch').includes('<b>Poke</b>'), 'touch Check/Poke (context labels)');
+  ok(hintMarkup('check', 'touch').includes('ir-tut-tbtn-turbo'), 'touch Turbo');
+  ok(hintMarkup('switch', 'touch').includes('<b>Switch</b>'), 'touch Switch');
+  ok(hintMarkup('move', 'touch').includes('ir-tut-joy') && textOf(hintMarkup('move', 'touch')).includes('Drag to skate'), 'touch stick');
+  for (const d of DEVICES) {
+    const u = hintMarkup('onetimer', d);
+    ok(u.includes('ir-tut-big') && u.includes('ir-tut-urgent'), `big one-timer prompt (${d})`);
+  }
   for (const id of HINT_IDS) for (const d of DEVICES) ok(hintMarkup(id, d).includes('ir-tut-title'), `${id}/${d}`);
   eq(hintMarkup('nope', 'keyboard'), '');
   eq(hintMarkup('shoot', 'banana'), hintMarkup('shoot', 'keyboard'), 'unknown device -> keyboard');
 });
 
+test('mouse glyph: which button is filled', () => {
+  const svgFill = (html) => /<g fill="currentColor">(.*?)<\/g>/.exec(html)[1];
+  const L = glyphHTML('shoot', 'keyboard', () => 'Mouse0');
+  const M = glyphHTML('shoot', 'keyboard', () => 'Mouse1');
+  const R = glyphHTML('shoot', 'keyboard', () => 'Mouse2');
+  ok(L.includes('ir-tut-mouse-l') && L.includes('<b>Left click</b>') && L.includes('<svg'), L);
+  ok(M.includes('ir-tut-mouse-m') && M.includes('<b>Middle click</b>'), M);
+  ok(R.includes('ir-tut-mouse-r') && R.includes('<b>Right click</b>'), R);
+  ok(svgFill(L) !== svgFill(R) && svgFill(L) !== svgFill(M), 'a different button is filled');
+  // the Coqui canvas glyph: left button arcs counter-clockwise (sweep 0), right clockwise (sweep 1)
+  ok(svgFill(L).includes('M6 0.75A5.25 5.25 0 0 0 0.75 6'), 'left half filled'); ok(svgFill(R).includes('M6 0.75A5.25 5.25 0 0 1 11.25 6'), 'right half filled');
+  eq(glyphHTML('pass', 'keyboard', () => 'Right click'), R, 'a display label works too');
+  ok(L.includes('aria-hidden="true"'), 'svg hidden from screen readers (the text says it)');
+  eq(mouseButton('Mouse0'), 0); eq(mouseButton('Mouse2'), 2); eq(mouseButton('left click'), 0); eq(mouseButton('KeyJ'), -1); eq(mouseButton(null), -1);
+  // combos mix a keycap and a mouse tile
+  const c = hintMarkup('glass', 'keyboard');
+  ok(c.includes('<b>L-Shift</b>') && c.includes('<b>Left click</b>') && c.includes('ir-tut-plus'), 'L-Shift + Left click');
+});
+
 test('keyLabel rebinding (keyboard only), escaped, throw-safe', () => {
   const kl = (btn) => ({ shoot: 'KeyF', pass: 'Space', turbo: 'ControlLeft', move: 'ARROWS' })[btn] ?? null;
   const m = hintMarkup('check', 'keyboard', kl);
-  ok(m.includes('<b>F</b>') && m.includes('<b>CTRL</b>'), m);
-  ok(hintMarkup('pass', 'keyboard', kl).includes('<b>SPACE</b>'));
+  ok(m.includes('<b>F</b>') && m.includes('<b>L-Ctrl</b>'), m);
+  ok(hintMarkup('pass', 'keyboard', kl).includes('<b>Space</b>'));
   ok(hintMarkup('deke', 'keyboard', kl).includes('<b>L</b>'), 'null -> default');
-  ok(hintMarkup('move', 'keyboard', kl).includes('<b>ARROWS</b>'));
+  ok(hintMarkup('move', 'keyboard', kl).includes('<b>Arrows</b>'), 'all-caps label -> sentence case');
   ok(!hintMarkup('shoot', 'gamepad', kl).includes('<b>F</b>'), 'ignored for gamepad');
-  ok(hintMarkup('shoot', 'keyboard', () => '<img onerror=x>').includes('&lt;IMG'), 'escaped');
-  ok(hintMarkup('shoot', 'keyboard', () => { throw new Error('x'); }).includes('<b>J</b>'), 'throw -> default');
+  ok(!hintMarkup('shoot', 'touch', kl).includes('<b>F</b>'), 'ignored for touch');
+  ok(hintMarkup('shoot', 'keyboard', () => '<img onerror=x>').includes('&lt;img'), 'escaped');
+  ok(!hintMarkup('shoot', 'keyboard', () => '<img onerror=x>').includes('<img'), 'no raw tag');
+  ok(hintMarkup('shoot', 'keyboard', () => { throw new Error('x'); }).includes('<b>Left click</b>'), 'throw -> default');
+  ok(hintMarkup('shoot', 'keyboard', () => '').includes('<b>Left click</b>'), "'' -> default");
   let args = null;
   glyphHTML('poke', 'keyboard', (...a) => { args = a; return null; });
   eq(args.join(), 'action,poke', 'keyLabel(button, action)');
-  eq(prettyKey('KeyJ'), 'J'); eq(prettyKey('Digit3'), '3'); eq(prettyKey('ShiftRight'), 'SHIFT');
-  eq(prettyKey('ArrowUp'), '↑'); eq(prettyKey('Numpad5'), 'NUM 5'); eq(prettyKey('space'), 'SPACE');
+  eq(prettyKey('KeyJ'), 'J'); eq(prettyKey('Digit3'), '3'); eq(prettyKey('ShiftRight'), 'R-Shift'); eq(prettyKey('ShiftLeft'), 'L-Shift');
+  eq(prettyKey('ArrowUp'), '↑'); eq(prettyKey('ArrowLeft'), '←'); eq(prettyKey('Numpad5'), 'Num 5'); eq(prettyKey('space'), 'Space');
+  eq(prettyKey('Space'), 'Space'); eq(prettyKey('Mouse0'), 'Left click'); eq(prettyKey('Mouse2'), 'Right click'); eq(prettyKey('Mouse1'), 'Middle click');
+  eq(prettyKey('F5'), 'F5'); eq(prettyKey('Escape'), 'Esc');
+});
+
+test('copy: sentence case, design wording', () => {
+  const copy = {
+    shoot: ["Puck's yours", 'Tap to wrist', 'Hold to slap'],
+    pass: ['Teammate open', 'Pass it'],
+    move: ['Hit the ice', 'Skate', 'Hold for turbo'],
+    deke: ['Defender ahead'],
+    check: ['Stop the carrier', 'Check', 'Big hit', 'Poke'],
+    glass: ['Carrier on the boards', 'Big hit'],
+    switch: ['Too far away', 'Switch skater'],
+    onetimer: ['Shoot now', 'One-timer: hit it as the pass arrives'],
+    fire: ["You're on fire"],
+    overtime: ['Sudden death', 'Overtime · next goal wins'],
+  };
+  for (const [id, parts] of Object.entries(copy)) {
+    const t = textOf(hintMarkup(id, 'keyboard', KEYS_ONLY));
+    for (const p of parts) ok(t.includes(p), `${id}: "${p}" in "${t}"`);
+  }
+  for (const id of HINT_IDS) for (const d of DEVICES) for (const kl of [null, KEYS_ONLY]) {
+    const t = textOf(hintMarkup(id, d, kl));
+    ok(!/[A-Z]{3,}/.test(t), `${id}/${d}: no all-caps words in "${t}"`);
+    ok(!/!/.test(t), `${id}/${d}: no exclamation marks in "${t}"`);
+  }
+});
+
+test('card kinds: urgent, hot (fire) and hot (overtime, warn)', () => {
+  eq(hintKind('onetimer'), 'urgent'); eq(hintKind('fire'), 'hot'); eq(hintKind('overtime'), 'hot'); eq(hintKind('shoot'), 'normal'); eq(hintKind('nope'), 'normal');
+  const u = hintMarkup('onetimer', 'keyboard', KEYS_ONLY);
+  ok(/<span class="ir-tut-glyphs ir-tut-big"><span class="ir-tut-key"><b>J<\/b><\/span><\/span>/.test(u), 'one big J tile');
+  const f = hintMarkup('fire', 'keyboard');
+  ok(f.includes('ir-tut-hot') && !f.includes('ir-tut-warn') && f.includes('ir-tut-ico-flame'), 'fire: flame glyph + fire tint');
+  const o = hintMarkup('overtime', 'gamepad');
+  ok(o.includes('ir-tut-hot ir-tut-warn') && o.includes('ir-tut-ico-clock'), 'overtime: clock glyph + warn tint');
+  for (const id of ['fire', 'overtime']) ok(!hintMarkup(id, 'keyboard').includes('ir-tut-key'), `${id}: no button glyphs`);
+});
+
+test('view: root classes (device + card kind), refresh on device change, cleanup (fake DOM)', () => {
+  const ids = {};
+  const mkEl = (tag) => ({
+    tagName: tag, children: [], attrs: {}, dataset: {}, className: '', innerHTML: '', textContent: '', id: '', parentNode: null,
+    setAttribute(k, v) { this.attrs[k] = v; },
+    appendChild(c) { this.children.push(c); c.parentNode = this; if (c.id) ids[c.id] = c; return c; },
+    remove() { const p = this.parentNode; if (p) p.children = p.children.filter((x) => x !== this); if (this.id) delete ids[this.id]; this.parentNode = null; },
+  });
+  const doc = { createElement: mkEl, getElementById: (id) => ids[id] || null };
+  doc.head = mkEl('head'); doc.body = mkEl('body'); doc.documentElement = mkEl('html');
+  const host = mkEl('div'); host.ownerDocument = doc;
+  const t = createTutorial({ container: host, storage: memStorage(), device: 'keyboard', keyLabel: KEYS_ONLY });
+  eq(host.children.length, 0, 'no DOM before the first hint');
+  eq(t.update(st((s) => { s.ph = PHASE.FACEOFF; }), [], ctx, DT), 'move');
+  const root = host.children[0];
+  ok(root && ids['ir-tut-style'], 'root + one style element');
+  eq(root.className, 'ir-tut-root ir-tut-dev-keyboard ir-tut-k-normal ir-tut-on');
+  ok(root.innerHTML.includes('Hit the ice') && root.innerHTML.includes('<b>L-Shift</b>'), root.innerHTML);
+  eq(root.attrs.role, 'status'); eq(root.attrs['aria-live'], 'polite');
+  eq(t.update(st((s) => put(s, 1, -4, 3)), [ev(EVENT.PASS, { by: 1, to: 0 })], ctx, DT), 'onetimer');
+  eq(root.className, 'ir-tut-root ir-tut-dev-keyboard ir-tut-k-urgent ir-tut-on');
+  ok(root.innerHTML.includes('Shoot now') && root.innerHTML.includes('<b>J</b>'), 'urgent card, J tile');
+  t.setDevice('touch');
+  eq(root.className, 'ir-tut-root ir-tut-dev-touch ir-tut-k-urgent ir-tut-on');
+  ok(root.innerHTML.includes('<b>Shoot</b>'), 'redrawn for touch');
+  hold(t, st(), 3);
+  eq(root.className, 'ir-tut-root ir-tut-dev-touch ir-tut-k-urgent', 'hidden (kind kept for the exit fade)');
+  t.dispose();
+  eq(host.children.length, 0, 'root removed');
+  eq(ids['ir-tut-style'], undefined, 'style removed with the last view');
+});
+
+test('stylesheet follows the design rules', () => {
+  const css = TUTORIAL_CSS;
+  for (const t of ['--ice', '--on-ice', '--ink', '--ink-2', '--hairline-strong', '--goal', '--fire', '--warn', '--surface-3', '--f-ui', '--r-lg', '--r-sm', '--r-md']) {
+    ok(new RegExp(`var\\(${t}, [^)]`).test(css), `${t} used with a fallback`);
+  }
+  ok(!/var\(--[\w-]+\)/.test(css.replace(/var\(--tut-acc\)/g, '')), 'every token var() has a fallback');
+  ok(!/text-transform:\s*uppercase/.test(css), 'no uppercase');
+  ok(!/letter-spacing:\s*(?!0[;\s])\S/.test(css), 'no letter-spacing');
+  ok(!/text-shadow|gradient\(|clip-path|skew/.test(css), 'no text-shadow / gradient / clip-path / skew');
+  ok(!/box-shadow/.test(css), 'hairlines, no shadows');
+  ok(/bottom: calc\(env\(safe-area-inset-bottom, 0px\) \+ 56px\)/.test(css), 'bottom-centre, 56px');
+  ok(/\.ir-tut-k-urgent \{[^}]*bottom: calc\(env\(safe-area-inset-bottom, 0px\) \+ 202px\)/.test(css), 'one-timer prompt 202px up (as in the frame)');
+  ok(css.indexOf('.ir-tut-root.ir-tut-dev-touch {') > css.indexOf('.ir-tut-root.ir-tut-k-urgent {'), 'touch placement wins over the urgent offset');
+  ok(/@media \(orientation: landscape\) and \(max-height: 540px\) \{\s*\.ir-tut-root\.ir-tut-dev-touch:not\(\.ir-tut-k-urgent\) \{[^}]*right: max\(14px[^}]*top: max\(10px/.test(css),
+    'phone held sideways: a compact top-right card, clear of the far boards');
+  ok(/@media \(prefers-reduced-motion: reduce\)/.test(css), 'reduced motion');
+  for (const m of css.matchAll(/font-size:\s*(\d+)px/g)) ok(Number(m[1]) >= 11, `font-size ${m[1]}px >= 11`);
+  for (const m of css.matchAll(/(\d+)ms/g)) ok(Number(m[1]) >= 120 && Number(m[1]) <= 340, `duration ${m[1]}ms within 120-340`);
+  ok(!/@import|url\(/.test(css), 'no external requests');
 });
 
 console.log(`\ntutorial: ${passed} passed, ${failed} failed`);

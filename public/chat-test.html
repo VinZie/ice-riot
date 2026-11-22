@@ -4,93 +4,101 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ICE RIOT - chat test</title>
+<link rel="icon" href="data:,">
 <!--
   Standalone harness for public/chat.js. No server needed beyond static files: the "server" below
   is a fake inline echo (it mirrors server/chat.js rules: sanitize, 120-char cap, token bucket
   burst 5 / refill 1 per s, emote id check). Bots chat from home / away / spectator.
-  URL params: ?mode=game  start in-game   &open=1  open the in-game input   &bots=0  no bot chatter
+  No style.css here on purpose: chat.js must look right from its own token fallbacks.
+  URL params: ?mode=game  start in-game   &open=1  open the in-game panel   &feed=1  two fresh
+              feed lines   &bots=0  no bot chatter
 -->
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; }
   body {
-    background: #070a16; color: #dfe7f5;
-    font-family: "Bahnschrift SemiCondensed", Bahnschrift, "Roboto Condensed", "Arial Narrow", Arial, sans-serif;
-    overflow: hidden;
+    background: #0A0F1C; color: #E8EDF5; overflow: hidden;
+    font: 13px/18px Bahnschrift, "DIN Alternate", "Segoe UI", sans-serif;
   }
   .bar {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 60; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
-    padding: 8px 12px; background: rgba(4, 6, 14, .85); border-bottom: 1px solid #1d2a44; font-size: 13px;
+    position: fixed; top: 16px; right: 16px; z-index: 60; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    justify-content: flex-end; max-width: calc(100vw - 368px); padding: 8px; border: 1px solid #253049; border-radius: 10px;
+    background: #111829;
   }
-  .bar b { color: #ffd23f; letter-spacing: .12em; font-style: italic; margin-right: 6px; }
   .bar button {
-    font: inherit; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #cfe9ff;
-    background: #101a30; border: 1px solid #2a3d63; border-radius: 3px; padding: 4px 9px; cursor: pointer;
+    font: inherit; font-size: 12px; color: #E8EDF5; background: transparent; border: 1px solid #34425F;
+    border-radius: 6px; padding: 4px 9px; cursor: pointer;
   }
-  .bar button.on { background: #2de2ff; color: #06101e; border-color: #2de2ff; }
-  .bar .status { margin-left: auto; color: #8fa3c0; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .bar .status em { color: #ffd23f; font-style: normal; }
+  .bar button.on { background: #DCEAF6; color: #0A0F1C; border-color: #DCEAF6; }
+  .bar .status { color: #A1ACC0; font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 4px; }
+  .bar .status em { color: #E8EDF5; font-style: normal; }
 
-  /* fake lobby */
-  .lobby {
-    position: absolute; inset: 52px 0 0 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 380px);
-    gap: 16px; padding: 16px; box-sizing: border-box;
-    background: radial-gradient(ellipse at 30% 20%, #16244a 0%, #070a16 70%);
+  /* fake lobby: the 336px rail from "Lobby · host", chat fills what is left below the invite */
+  .lobby { position: absolute; inset: 0; display: grid; grid-template-columns: 336px minmax(0, 1fr); }
+  .rail {
+    display: flex; flex-direction: column; gap: 22px; min-height: 0; padding: 24px 25px 24px 24px;
+    background: #111829; box-shadow: inset -1px 0 0 #253049;
   }
-  .roster { border: 2px solid #22345a; border-radius: 4px; padding: 14px 16px; background: rgba(8, 12, 28, .6); }
-  .roster h2 { margin: 0 0 10px; font-style: italic; letter-spacing: .14em; color: #ffd23f; font-size: 22px; }
-  .roster .team { margin: 12px 0 4px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-  .roster .p { padding: 3px 8px; margin: 2px 0; background: rgba(255, 255, 255, .04); border-radius: 3px; font-size: 14px; }
-  .chat-slot { min-height: 0; height: 100%; }
+  .rail .logo { height: 40px; font-weight: 700; font-style: italic; font-size: 26px; line-height: 40px; color: #DCEAF6; }
+  .rail .me { display: flex; gap: 12px; align-items: center; height: 44px; }
+  .rail .me i { width: 44px; height: 44px; border-radius: 50%; background: color-mix(in srgb, #ff6a13 22%, #111829);
+    border: 1px solid #ff6a13; display: grid; place-items: center; font-style: normal; }
+  .rail .me b { display: block; font-size: 18px; line-height: 22px; font-weight: 600; }
+  .rail .me span { color: #A1ACC0; font-size: 12px; }
+  .rail .invite { display: flex; flex-direction: column; gap: 8px; padding-bottom: 22px; border-bottom: 1px solid #253049; }
+  .rail .invite span { font-size: 12px; color: #A1ACC0; }
+  .rail .invite div { height: 38px; border: 1px solid #34425F; border-radius: 10px; padding: 0 12px; line-height: 36px;
+    font-family: "Cascadia Mono", ui-monospace, Consolas, monospace; font-size: 12px; color: #A1ACC0; overflow: hidden; }
+  .chat-slot { flex: 1 1 auto; min-height: 0; }
+  .main { display: grid; place-items: center; color: #6A7590; }
   @media (max-width: 720px) {
-    .lobby { grid-template-columns: 1fr; grid-template-rows: auto minmax(260px, 1fr); }
-    .roster { display: none; }
+    .lobby { grid-template-columns: 1fr; }
+    .main { display: none; }
+    .bar { max-width: calc(100vw - 32px); top: auto; bottom: 16px; }
   }
 
-  /* fake rink */
-  .rink { position: absolute; inset: 0; display: none; background: #0b1530; }
+  /* fake rink (white ice, so the feed is tested on its worst background) */
+  .rink { position: absolute; inset: 0; display: none; background: #1a2238; }
   .rink .ice {
-    position: absolute; left: 6%; right: 6%; top: 18%; bottom: 10%; border-radius: 90px;
+    position: absolute; left: -4%; right: -4%; top: 16%; bottom: -10%; border-radius: 120px;
     background:
-      linear-gradient(90deg, transparent 49.6%, #d4283a 49.6%, #d4283a 50.4%, transparent 50.4%),
-      linear-gradient(90deg, transparent 36%, #2b56c9 36%, #2b56c9 37.2%, transparent 37.2%,
-                              transparent 62.8%, #2b56c9 62.8%, #2b56c9 64%, transparent 64%),
-      radial-gradient(ellipse at 50% 45%, #ffffff 0%, #e8f1fb 60%, #cfdbea 100%);
-    box-shadow: 0 0 0 10px #f4f6fa, 0 0 0 14px #1d2a44, 0 30px 80px rgba(0, 0, 0, .6);
-  }
-  .rink .hud {
-    position: absolute; top: 60px; left: 50%; transform: translateX(-50%); display: flex; gap: 14px; align-items: center;
-    background: rgba(5, 8, 20, .85); border: 2px solid #2de2ff; border-radius: 4px; padding: 4px 14px;
-    font-weight: 800; font-style: italic; letter-spacing: .08em; font-size: 20px;
+      linear-gradient(90deg, transparent 49.6%, #ff4b5c 49.6%, #ff4b5c 50.4%, transparent 50.4%),
+      linear-gradient(90deg, transparent 33%, #4a8ae0 33%, #4a8ae0 34.2%, transparent 34.2%,
+                              transparent 65.8%, #4a8ae0 65.8%, #4a8ae0 67%, transparent 67%),
+      #eef1f5;
   }
   .rink .dot { position: absolute; width: 22px; height: 22px; border-radius: 50%; border: 3px solid #111; }
+  .rink .hud {
+    position: absolute; top: 16px; left: 50%; transform: translateX(-50%); width: 440px; height: 64px;
+    display: flex; align-items: center; justify-content: space-around; background: #0A0F1C;
+    border: 1px solid #34425F; border-radius: 10px; font-size: 18px; font-weight: 700;
+  }
+  .rink .hud em { font-size: 30px; }
+  body.game .bar { top: auto; bottom: 16px; }
   body.game .lobby { display: none; }
   body.game .rink { display: block; }
 </style>
 </head>
 <body>
   <div class="bar">
-    <b>CHAT TEST</b>
     <button id="mLobby">Lobby</button>
-    <button id="mGame">In-game</button>
+    <button id="mGame">In game</button>
     <button id="bSay">Bot says</button>
-    <button id="bEmote">Bot emote</button>
+    <button id="bEmote">Bot quick line</button>
+    <button id="bSys">System line</button>
     <button id="bSpam">Spam x8</button>
-    <button id="bColors">Swap colors</button>
-    <span class="status">typing: <em id="typing">no</em> &middot; game keys seen: <em id="keys">-</em></span>
+    <button id="bColors">Swap colours</button>
+    <span class="status">typing <em id="typing">no</em> &middot; game keys <em id="keys">-</em></span>
   </div>
 
   <div class="lobby">
-    <div class="roster">
-      <h2>LOBBY</h2>
-      <div class="team" style="color:#ff6a13">Home</div>
-      <div class="p">You</div><div class="p">Blizz</div>
-      <div class="team" style="color:#7fd3ff">Away</div>
-      <div class="p">Rook</div><div class="p">(AI)</div>
-      <div class="team" style="color:#9aa3ad">Spectators</div>
-      <div class="p">Sideline Sam</div>
-    </div>
-    <div class="chat-slot" id="chatSlot"></div>
+    <aside class="rail">
+      <div class="logo">ICE RIOT</div>
+      <div class="me"><i>B</i><div><b>Blade</b><span>Host &middot; room friday</span></div></div>
+      <div class="invite"><span>Invite link</span><div>my-pc.tail1234.ts.net:8765/?room=friday</div></div>
+      <div class="chat-slot" id="chatSlot"></div>
+    </aside>
+    <div class="main">Match view</div>
   </div>
 
   <div class="rink" id="rink">
@@ -100,7 +108,7 @@
       <div class="dot" style="left:58%;top:35%;background:#7fd3ff"></div>
       <div class="dot" style="left:66%;top:55%;background:#7fd3ff"></div>
     </div>
-    <div class="hud"><span style="color:#ff6a13">HAM 2</span><span style="color:#8fa3c0">1st 1:42</span><span style="color:#7fd3ff">3 FWV</span></div>
+    <div class="hud"><span style="color:#ff6a13">HAM</span><em><i>2</i></em><span>1:31</span><em><i>1</i></em><span style="color:#7fd3ff">FWV</span></div>
   </div>
 
 <script type="module">
@@ -109,10 +117,11 @@ import { createChat, QUICK_CHAT, CHAT_MAX_LEN } from './chat.js';
 const params = new URLSearchParams(location.search);
 const MY_ID = 1;
 const PEOPLE = {
-  1: { id: 1, name: 'You', team: 0 },
-  2: { id: 2, name: 'Blizz', team: 0 },
-  3: { id: 3, name: 'Rook', team: 1 },
-  4: { id: 4, name: 'Sideline Sam', team: -1 },
+  1: { id: 1, name: 'Blade', team: 0 },
+  2: { id: 2, name: 'Mags', team: 0 },
+  3: { id: 3, name: 'DeepFreeze', team: 1 },
+  4: { id: 4, name: 'Toaster', team: -1 },
+  5: { id: 5, name: 'nik', team: -1 },
 };
 const COLOR_SETS = [[0xff6a13, 0x7fd3ff], [0x39ff14, 0xffd23f], [0x14213d, 0x4b1d80] /* dark: gets lifted */];
 let colorSet = 0;
@@ -144,7 +153,7 @@ function fakeServer(client, msg) {
   } else return;
   const now = Date.now();
   if (!take(client.id, now)) {
-    if (client.id === MY_ID) chat.receive({ t: 'chat', from: 0, name: '', team: -1, text: 'Slow down - too many chat messages', emote: null, ts: now });
+    if (client.id === MY_ID) chat.receive({ t: 'chat', from: 0, name: '', team: -1, text: 'Slow down, too many chat messages', emote: null, ts: now });
     return;
   }
   const out = { t: 'chat', from: client.id, name: client.name, team: client.team, text, emote, ts: now };
@@ -156,7 +165,7 @@ const chat = createChat(document.getElementById('chatSlot'), {
   send: (m) => fakeServer(PEOPLE[MY_ID], m),
   myId: MY_ID,
   gameContainer: document.body,
-  onTyping: (on) => { document.getElementById('typing').textContent = on ? 'YES' : 'no'; },
+  onTyping: (on) => { document.getElementById('typing').textContent = on ? 'yes' : 'no'; },
 });
 chat.setTeamColors(COLOR_SETS[0]);
 window.chat = chat;
@@ -167,6 +176,11 @@ window.addEventListener('keydown', (e) => {
   if (!GAME_KEYS.has(e.code) || chat.isTyping()) return;
   const el = document.getElementById('keys');
   el.textContent = (e.code.replace('Key', '') + ' ' + el.textContent).slice(0, 24);
+});
+// Shows that clicks on the in-game chat don't reach window-level mouse bindings (Mouse0 = shoot).
+window.addEventListener('mousedown', (e) => {
+  const el = document.getElementById('keys');
+  el.textContent = (`Mouse${e.button} ` + el.textContent).slice(0, 24);
 });
 
 function setMode(game) {
@@ -180,38 +194,49 @@ document.getElementById('mGame').onclick = () => setMode(true);
 
 const LINES = [
   'anyone up for a 3v3?', 'that glass did not survive', 'switching to defense', 'who keeps icing it lol',
-  'one-timer from the slot, so clean', 'my goalie is asleep', 'turbo is everything', 'brb',
+  'one-timer from the slot, so clean', '<b>this is not bold</b> & <img src=x onerror=alert(1)> stays literal',
+  'turbo is everything', 'that last slapshot went through the glass and I am still not over it, absolutely ridiculous power',
 ];
 let lineIdx = 0;
-const bot = () => PEOPLE[2 + Math.floor(Math.random() * 3)];
+const bot = () => PEOPLE[2 + Math.floor(Math.random() * 4)];
 function botSay() { fakeServer(bot(), { t: 'chat', text: LINES[lineIdx++ % LINES.length] }); }
 function botEmote() { fakeServer(bot(), { t: 'emote', id: Math.floor(Math.random() * QUICK_CHAT.length) }); }
 document.getElementById('bSay').onclick = botSay;
 document.getElementById('bEmote').onclick = botEmote;
+document.getElementById('bSys').onclick = () => chat.receive({ t: 'chat', from: 0, name: '', team: -1, text: 'nik left', emote: null, ts: Date.now() });
 document.getElementById('bSpam').onclick = () => { for (let i = 0; i < 8; i++) fakeServer(PEOPLE[MY_ID], { t: 'chat', text: `spam ${i + 1}` }); };
 document.getElementById('bColors').onclick = () => { colorSet = (colorSet + 1) % COLOR_SETS.length; chat.setTeamColors(COLOR_SETS[colorSet]); };
 
-// ---- seed ---------------------------------------------------------------------------------
+// ---- seed (the "Lobby · host" rail) ---------------------------------------------------------
 const game = params.get('mode') === 'game';
-setMode(game);
-const t0 = Date.now() - 60000;
+const at = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.getTime(); };
 const seed = [
-  [2, 'anyone up for a 3v3?'],
-  [3, '<b>this is not bold</b> & <img src=x onerror=alert(1)> stays literal'],
-  [4, 'watching from the cheap seats'],
-  [1, 'ready when you are'],
-  [3, null, 4],
-  [2, 'that last slapshot went through the glass and I am still not over it, absolutely ridiculous power'],
-  [2, null, 7],
-  [1, null, 1],
+  [2, "who's bringing snacks next week", at(19, 2)],
+  [0, 'DeepFreeze joined away', at(19, 2) + 30000],
+  [3, "wolves again. you're going down", at(19, 3)],
+  [4, 'watching first, my wifi is cooked', at(19, 4)],
+  [1, '2 min periods on pro, ok?', at(19, 4) + 20000],
+  [5, 'GG in advance', at(19, 5)],
 ];
-seed.forEach(([id, text, emote], i) => {
-  const p = PEOPLE[id];
-  chat.receive({ t: 'chat', from: id, name: p.name, team: p.team, text: text ?? QUICK_CHAT[emote], emote: emote ?? null, ts: t0 + i * 7000 });
-});
+for (const [id, text, ts] of seed) {
+  const p = PEOPLE[id] || { id: 0, name: '', team: -1 };
+  chat.receive({ t: 'chat', from: p.id, name: p.name, team: p.team, text, emote: null, ts });
+}
 // A replayed history message (hist) is de-duplicated if it was already shown:
-chat.receive({ t: 'chat', from: 2, name: 'Blizz', team: 0, text: 'anyone up for a 3v3?', emote: null, ts: t0, hist: true });
-if (game && params.get('open') === '1') chat.open();
+chat.receive({ t: 'chat', from: 2, name: 'Mags', team: 0, text: "who's bringing snacks next week", emote: null, ts: at(19, 2), hist: true });
+setMode(game);
+if (game) {
+  const now = Date.now();
+  if (params.get('open') === '1') {
+    chat.receive({ t: 'chat', from: 3, name: 'DeepFreeze', team: 1, text: 'overtime. no mercy', emote: null, ts: now - 3000 });
+    chat.receive({ t: 'chat', from: 4, name: 'Toaster', team: -1, text: 'this is the best game all week', emote: null, ts: now - 2000 });
+    chat.receive({ t: 'chat', from: 2, name: 'Mags', team: 0, text: 'Pass it!', emote: 1, ts: now - 1000 });
+    chat.open();
+  } else if (params.get('feed') === '1') {
+    chat.receive({ t: 'chat', from: 3, name: 'DeepFreeze', team: 1, text: 'What a hit!', emote: 4, ts: now - 1000 });
+    chat.receive({ t: 'chat', from: 2, name: 'Mags', team: 0, text: 'Pass it!', emote: 1, ts: now });
+  }
+}
 if (params.get('bots') !== '0') setInterval(() => (Math.random() < 0.6 ? botSay() : botEmote()), 4500);
 </script>
 </body>

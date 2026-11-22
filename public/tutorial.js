@@ -23,11 +23,19 @@
 // `ctx` is the renderer ctx ({ myId, ... }). Optional extra: `ctx.periods` = config.periods (default
 // DEFAULT_CONFIG.periods) to recognise overtime (snapshot `per` > periods).
 //
-// `keyLabel(button, action)` (optional, keyboard only) returns the label for a rebound key.
+// `keyLabel(button, action)` (optional, keyboard only) returns the primary binding of a button.
 //   button: 'move' | 'shoot' | 'pass' | 'action' | 'turbo'   (the physical BTN, lowercase)
 //   action: contextual meaning, e.g. 'check' for button 'shoot' without the puck
-//   It may return a display label ('J', 'Space') or a KeyboardEvent.code ('KeyJ', 'ShiftLeft');
-//   null / '' / a throw falls back to the default key.
+//   It may return a KeyboardEvent.code ('KeyJ', 'ShiftLeft'), a mouse code ('Mouse0' left,
+//   'Mouse1' middle, 'Mouse2' right) or a display label ('J', 'Space', 'Left click');
+//   null / '' / a throw falls back to the default binding (Mouse0 / Mouse2 / KeyL / ShiftLeft).
+//   Mouse buttons draw a mouse glyph with that button filled, everything else an ice keycap.
+//
+// Look: the hint cards of the Coqui "Final · in game" page (tutorial hint, one-timer hint ·
+// urgent), built on the design tokens of public/style.css (var(--name, fallback) throughout).
+// Bottom-centre, 56px above the bottom edge (top-centre under the scoreboard on touch, where the
+// thumbs and on-screen buttons own the bottom of the screen; a compact top-right card on a phone
+// held sideways, clear of the far boards' head tags).
 
 import { PHASE, PSTATE, EVENT, DEFAULT_CONFIG, boardDistance } from '../shared/constants.js';
 
@@ -40,7 +48,7 @@ export const TUNING = Object.freeze({
   oneTimerWindow: 2.5,   // s after a PASS to me during which the pass counts as "on its way"
   passLag: 0.3,          // s the passer may still appear to own the puck (interpolation lag)
   moveWindow: 12,        // s after I first appear in a game during which the move hint may show
-  fireWindow: 10,        // s after catching fire during which the ON FIRE hint may show
+  fireWindow: 10,        // s after catching fire during which the on-fire hint may show
   otWindow: 15,          // s after overtime starts during which the sudden-death hint may show
   maxDt: 1,              // clamp for one update's dtSec (tab was hidden, breakpoint...)
   deke: Object.freeze({ dist: 3, cos: 0.5 }),                       // within 3 m, +-60 deg of my facing
@@ -467,87 +475,131 @@ export function createTutorialCore({
 }
 
 // ---------------------------------------------------------------------------------------------
-// Hint content + key-cap glyph markup (pure strings, so Node can test them too).
+// Hint content + glyph markup (pure strings, so Node can test them too).
+//
+// Three card kinds, ported from the Coqui frames ("Final · in game"):
+//   normal  "HUD · play" / tutorial hint: 52px plate, 15px bold title left, glyph + label pairs right
+//   urgent  "HUD · chat open ..." / one-timer hint · urgent: goal-red tint, 48px key tile,
+//           "Shoot now" (italic) over "One-timer: hit it as the pass arrives"
+//   hot     glyph + title + note on a tinted plate: fire for "You're on fire", amber (warn) for
+//           overtime, the colours the callout kit uses for those two moments
 
 // contextual action -> physical button
 const ACTION_BUTTON = { move: 'move', shoot: 'shoot', check: 'shoot', pass: 'pass', switch: 'pass', deke: 'action', poke: 'action', turbo: 'turbo' };
-const KEYBOARD = { shoot: 'J', pass: 'K', action: 'L', turbo: 'SHIFT' };
-const GAMEPAD = { shoot: ['a', 'A'], pass: ['x', 'X'], action: ['b', 'B'], turbo: ['rb', 'RB'] };
-// touch buttons relabel by context (see touch.js): SHOOT/CHECK, PASS/SWITCH, DEKE/POKE, TURBO
-const TOUCH_TEXT = { shoot: 'SHOOT', check: 'CHECK', pass: 'PASS', switch: 'SWITCH', deke: 'DEKE', poke: 'POKE', turbo: 'TURBO' };
+// default primary bindings (same as settings.js DEFAULTS.keys[button][0])
+const KEYBOARD = { shoot: 'Mouse0', pass: 'Mouse2', action: 'KeyL', turbo: 'ShiftLeft' };
+const GAMEPAD = { shoot: ['a', 'A'], pass: ['x', 'X'], action: ['b', 'B'] };
+// touch buttons relabel by context (see touch.js): Shoot/Check, Pass/Switch, Deke/Poke, Turbo
+const TOUCH_TEXT = { shoot: 'Shoot', check: 'Check', pass: 'Pass', switch: 'Switch', deke: 'Deke', poke: 'Poke', turbo: 'Turbo' };
 const TOUCH_CLASS = { shoot: 'shoot', pass: 'pass', action: 'deke', turbo: 'turbo' };
 
 const CONTENT = {
   move: {
-    title: 'HIT THE ICE',
+    title: 'Hit the ice',
     items: [
-      { keys: ['move'], label: { default: 'SKATE', touch: 'DRAG TO SKATE' } },
-      { keys: ['turbo'], label: 'HOLD · TURBO' },
+      { keys: ['move'], label: { default: 'Skate', touch: 'Drag to skate' } },
+      { keys: ['turbo'], label: 'Hold for turbo' },
     ],
   },
   shoot: {
-    title: "PUCK'S YOURS",
-    items: [{ keys: ['shoot'], label: 'TAP · WRIST SHOT', sub: 'HOLD + RELEASE · SLAPSHOT' }],
+    title: "Puck's yours",
+    items: [{ keys: ['shoot'], label: 'Tap to wrist' }, { keys: ['shoot'], label: 'Hold to slap' }],
   },
-  pass: { title: 'TEAMMATE OPEN', items: [{ keys: ['pass'], label: 'PASS IT' }] },
-  deke: { title: 'DEFENDER AHEAD', items: [{ keys: ['deke'], label: 'DEKE AROUND', sub: 'BEATS STICK CHECKS' }] },
-  onetimer: {
-    title: 'ONE-TIMER!', urgent: true,
-    items: [{ keys: ['shoot'], big: true, label: 'SHOOT NOW', sub: 'HIT IT AS THE PASS ARRIVES' }],
-  },
+  pass: { title: 'Teammate open', items: [{ keys: ['pass'], label: 'Pass it' }] },
+  deke: { title: 'Defender ahead', items: [{ keys: ['deke'], label: 'Deke around him' }] },
+  onetimer: { kind: 'urgent', key: 'shoot', title: 'Shoot now', note: 'One-timer: hit it as the pass arrives' },
   check: {
-    title: 'STOP THE CARRIER',
+    title: 'Stop the carrier',
     items: [
-      { keys: ['check'], label: 'CHECK' },
-      { keys: ['turbo', 'check'], label: 'BIG HIT' },
-      { keys: ['poke'], label: 'POKE' },
+      { keys: ['check'], label: 'Check' },
+      { keys: ['turbo', 'check'], label: 'Big hit' },
+      { keys: ['poke'], label: 'Poke' },
     ],
   },
-  glass: {
-    title: 'CARRIER ON THE BOARDS',
-    items: [{ keys: ['turbo', 'check'], label: 'BIG HIT', sub: 'SHATTER THE GLASS!' }],
-  },
-  switch: { title: 'TOO FAR AWAY', items: [{ keys: ['switch'], label: 'SWITCH PLAYER', sub: 'TO THE TEAMMATE NEAR THE PUCK' }] },
-  fire: { title: "YOU'RE ON FIRE!", hot: true, note: 'SUPERCHARGED SHOTS & HITS · KEEP THE STREAK ALIVE' },
-  overtime: { title: 'SUDDEN DEATH', hot: true, note: 'OVERTIME · NEXT GOAL WINS' },
+  glass: { title: 'Carrier on the boards', items: [{ keys: ['turbo', 'check'], label: 'Big hit into the glass' }] },
+  switch: { title: 'Too far away', items: [{ keys: ['switch'], label: 'Switch skater' }] },
+  fire: { kind: 'hot', icon: 'flame', title: "You're on fire", note: 'Shots and hits land harder' },
+  overtime: { kind: 'hot', tone: 'warn', icon: 'clock', title: 'Sudden death', note: 'Overtime · next goal wins' },
 };
 
 export const HINT_IDS = Object.freeze(Object.keys(CONTENT));
+
+/** 'normal' | 'urgent' | 'hot' for a hint id (the root carries it as .ir-tut-k-<kind>). */
+export function hintKind(id) {
+  const c = CONTENT[id];
+  return c && c.kind ? c.kind : 'normal';
+}
 
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
 const normDevice = (d) => (DEVICES.includes(d) ? d : 'keyboard');
 const pick = (label, device) => (label && typeof label === 'object' ? label[device] ?? label.default : label) || '';
 
+// Labels match settings.js keyLabel(code) (contract: "Left click", "Space", "L-Shift", arrow glyphs).
 const CODE_NAMES = {
-  Space: 'SPACE', ShiftLeft: 'SHIFT', ShiftRight: 'SHIFT', ControlLeft: 'CTRL', ControlRight: 'CTRL',
-  AltLeft: 'ALT', AltRight: 'ALT', Enter: 'ENTER', Tab: 'TAB', Backspace: 'BKSP', Escape: 'ESC',
-  ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', CapsLock: 'CAPS',
-  Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
+  Space: 'Space', ShiftLeft: 'L-Shift', ShiftRight: 'R-Shift', ControlLeft: 'L-Ctrl', ControlRight: 'R-Ctrl',
+  AltLeft: 'L-Alt', AltRight: 'R-Alt', MetaLeft: 'L-Meta', MetaRight: 'R-Meta', Enter: 'Enter', Tab: 'Tab',
+  Backspace: 'Bksp', Escape: 'Esc', CapsLock: 'Caps', ContextMenu: 'Menu',
+  ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
+  Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Backslash: '\\', IntlBackslash: '\\',
   BracketLeft: '[', BracketRight: ']', Minus: '-', Equal: '=', Backquote: '`',
+  Insert: 'Ins', Delete: 'Del', Home: 'Home', End: 'End', PageUp: 'PgUp', PageDown: 'PgDn',
+  Mouse0: 'Left click', Mouse1: 'Middle click', Mouse2: 'Right click',
 };
+const MOUSE_LABEL = ['left click', 'middle click', 'right click'];
 
-/** 'KeyJ' -> 'J', 'Digit1' -> '1', 'ShiftLeft' -> 'SHIFT', 'Numpad5' -> 'NUM 5', 'space' -> 'SPACE'. */
+/** 'KeyJ' -> 'J', 'Digit1' -> '1', 'ShiftLeft' -> 'L-Shift', 'Numpad5' -> 'Num 5', 'Mouse0' -> 'Left click',
+ *  'space' -> 'Space', 'SHIFT' -> 'Shift'. Anything else (a display label) passes through. */
 export function prettyKey(label) {
   const s = String(label).trim();
-  if (CODE_NAMES[s]) return CODE_NAMES[s];
+  if (Object.prototype.hasOwnProperty.call(CODE_NAMES, s)) return CODE_NAMES[s];
   let mt = /^Key([A-Z])$/.exec(s);
   if (mt) return mt[1];
   mt = /^Digit(\d)$/.exec(s);
   if (mt) return mt[1];
   mt = /^Numpad(\w+)$/.exec(s);
-  if (mt) return 'NUM ' + mt[1].toUpperCase();
-  return s.toUpperCase();
+  if (mt) return 'Num ' + mt[1];
+  if (/^[a-z][a-z ]*$/.test(s) && s.length > 1) return s[0].toUpperCase() + s.slice(1);   // sentence case
+  if (/^[A-Z]{3,}$/.test(s)) return s[0] + s.slice(1).toLowerCase();                     // no all-caps words
+  return s;
+}
+
+/** 0 | 1 | 2 for a mouse button code ('Mouse0') or label ('Left click'), else -1. */
+export function mouseButton(label) {
+  const s = String(label ?? '').trim();
+  const mt = /^Mouse([0-2])$/.exec(s);
+  if (mt) return Number(mt[1]);
+  return MOUSE_LABEL.indexOf(s.toLowerCase());
 }
 
 function customKey(keyLabel, button, action) {
   if (typeof keyLabel !== 'function') return null;
   try {
     const r = keyLabel(button, action);
-    if (r == null) return null;
-    const s = prettyKey(r);
-    return s ? s.slice(0, 12) : null;
+    if (r == null || r === '') return null;
+    return String(r).trim().slice(0, 24) || null;
   } catch { return null; }
+}
+
+// --- glyphs ----------------------------------------------------------------------------------
+
+// Mouse: body outline + button split, the pressed button filled (on-ice ink inside an ice tile).
+// Paths from the Coqui canvas mouse glyph (viewBox 0 0 12 16).
+const MOUSE_FILL = [
+  '<path d="M6 0.75A5.25 5.25 0 0 0 0.75 6V6.5H6Z"/>',
+  '<rect x="5" y="2.6" width="2" height="3.2" rx="1"/>',
+  '<path d="M6 0.75A5.25 5.25 0 0 1 11.25 6V6.5H6Z"/>',
+];
+function mouseSVG(btn) {
+  const split = btn === 1 ? 'M0.75 6.5H11.25' : 'M6 0.75V6.5M0.75 6.5H11.25';
+  return '<svg class="ir-tut-mouse-ico" viewBox="0 0 12 16" aria-hidden="true" focusable="false">' +
+    '<g fill="none" stroke="currentColor" stroke-width="1.5">' +
+    `<rect x="0.75" y="0.75" width="10.5" height="14.5" rx="5.25"/><path d="${split}"/></g>` +
+    `<g fill="currentColor">${MOUSE_FILL[btn]}</g></svg>`;
+}
+const MOUSE_SIDE = ['l', 'm', 'r'];
+function mouseCap(btn) {
+  return `<span class="ir-tut-key ir-tut-wide ir-tut-mouse ir-tut-mouse-${MOUSE_SIDE[btn]}">${mouseSVG(btn)}<b>${CODE_NAMES['Mouse' + btn]}</b></span>`;
 }
 
 function keyCap(label) {
@@ -555,27 +607,41 @@ function keyCap(label) {
   return `<span class="ir-tut-key${wide ? ' ir-tut-wide' : ''}"><b>${esc(label)}</b></span>`;
 }
 
-const WASD = '<span class="ir-tut-wasd">' +
-  '<span class="ir-tut-key ir-tut-w"><b>W</b></span><span class="ir-tut-key"><b>A</b></span>' +
-  '<span class="ir-tut-key"><b>S</b></span><span class="ir-tut-key"><b>D</b></span></span>';
+/** Glyph for a key code / label: a mouse tile for Mouse0-2, otherwise an ice keycap. */
+function codeGlyph(code) {
+  const mb = mouseButton(code);
+  if (mb >= 0) return mouseCap(mb);
+  const s = prettyKey(code).slice(0, 12);
+  return keyCap(s || '?');
+}
+
+const WASD = '<span class="ir-tut-wasd">' + ['W', 'A', 'S', 'D'].map((k) => `<span class="ir-tut-key"><b>${k}</b></span>`).join('') + '</span>';
+
+// Flame and clock: the icons of the "On fire" and "Overtime" callouts in the Coqui callout kit.
+const ICONS = {
+  flame: '<svg class="ir-tut-ico-flame" viewBox="0 0 23.04 35.52" aria-hidden="true" focusable="false"><path fill="currentColor" fill-rule="evenodd" ' +
+    'd="M11.52 0 C12.96 7.68 23.04 12 23.04 24 C23.04 30.36 17.88 35.52 11.52 35.52 C5.16 35.52 0 30.36 0 24 C0 18.72 2.88 15.36 5.52 12.96 C6 16.56 7.68 18.72 10.08 19.68 C9.12 13.68 9.12 6.72 11.52 0 Z"/></svg>',
+  clock: '<svg class="ir-tut-ico-clock" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="1.44" stroke-linecap="round">' +
+    '<circle cx="8" cy="8.8" r="5.2"/><path d="M8 6v2.8l2 1.2M6.4 2h3.2"/></g></svg>',
+};
 
 /** Markup of one button glyph for a contextual action on a device. */
 export function glyphHTML(action, device = 'keyboard', keyLabel = null) {
   const dev = normDevice(device);
   const btn = ACTION_BUTTON[action] || 'shoot';
   if (dev === 'gamepad') {
-    if (btn === 'move') return '<span class="ir-tut-stick"><i>L</i></span>';
+    if (btn === 'move') return '<span class="ir-tut-stick">L</span>';
     if (btn === 'turbo') return '<span class="ir-tut-bumper">RB</span>';
     const [cls, txt] = GAMEPAD[btn];
     return `<span class="ir-tut-pad ir-tut-pad-${cls}">${txt}</span>`;
   }
   if (dev === 'touch') {
-    if (btn === 'move') return '<span class="ir-tut-joy"><i></i></span>';
+    if (btn === 'move') return '<span class="ir-tut-joy" role="img" aria-label="Touch stick"><i></i></span>';
     return `<span class="ir-tut-tbtn ir-tut-tbtn-${TOUCH_CLASS[btn]}"><b>${TOUCH_TEXT[action] || TOUCH_TEXT[btn]}</b></span>`;
   }
   const custom = customKey(keyLabel, btn, action);
-  if (btn === 'move') return custom ? keyCap(custom) : WASD;
-  return keyCap(custom || KEYBOARD[btn]);
+  if (btn === 'move') return custom ? codeGlyph(custom) : WASD;
+  return codeGlyph(custom || KEYBOARD[btn]);
 }
 
 /** Full card markup for a hint on a device ('' for an unknown id). */
@@ -584,139 +650,164 @@ export function hintMarkup(id, device = 'keyboard', keyLabel = null) {
   if (!c) return '';
   const dev = normDevice(device);
   const cls = ['ir-tut-card', `ir-tut-h-${id}`];
-  if (c.urgent) cls.push('ir-tut-urgent');
-  if (c.hot) cls.push('ir-tut-hot');
+  if (c.kind === 'urgent') {
+    cls.push('ir-tut-urgent');
+    return `<div class="${cls.join(' ')}"><span class="ir-tut-glyphs ir-tut-big">${glyphHTML(c.key, dev, keyLabel)}</span>` +
+      `<div class="ir-tut-text"><div class="ir-tut-title">${esc(c.title)}</div><div class="ir-tut-note">${esc(c.note)}</div></div></div>`;
+  }
+  if (c.kind === 'hot') {
+    cls.push('ir-tut-hot');
+    if (c.tone) cls.push(`ir-tut-${c.tone}`);
+    return `<div class="${cls.join(' ')}"><div class="ir-tut-head"><span class="ir-tut-ico">${ICONS[c.icon] || ''}</span>` +
+      `<div class="ir-tut-title">${esc(c.title)}</div></div><div class="ir-tut-note">${esc(c.note)}</div></div>`;
+  }
   const items = (c.items || []).map((it) => {
     const glyphs = it.keys.map((a) => glyphHTML(a, dev, keyLabel)).join('<span class="ir-tut-plus">+</span>');
-    const sub = it.sub ? `<small class="ir-tut-sub">${esc(it.sub)}</small>` : '';
-    return `<span class="ir-tut-item"><span class="ir-tut-glyphs${it.big ? ' ir-tut-big' : ''}">${glyphs}</span>` +
-      `<span class="ir-tut-lbl">${esc(pick(it.label, dev))}${sub}</span></span>`;
+    return `<span class="ir-tut-item"><span class="ir-tut-glyphs">${glyphs}</span><span class="ir-tut-lbl">${esc(pick(it.label, dev))}</span></span>`;
   }).join('');
-  return `<div class="${cls.join(' ')}"><div class="ir-tut-title">${esc(c.title)}</div>` +
-    (items ? `<div class="ir-tut-row">${items}</div>` : '') +
-    (c.note ? `<div class="ir-tut-note">${esc(c.note)}</div>` : '') + '</div>';
+  return `<div class="${cls.join(' ')}"><div class="ir-tut-title">${esc(c.title)}</div><div class="ir-tut-row">${items}</div></div>`;
 }
 
 // ---------------------------------------------------------------------------------------------
-// Style (injected once per document, ref-counted).
+// Style (injected once per document, ref-counted). Colours, radii and fonts come from the design
+// tokens on :root (public/style.css); every var() carries its fallback so test pages without
+// style.css look the same. Plain hex fallbacks precede each color-mix() for older engines.
 
 const STYLE_ID = 'ir-tut-style';
-const FONT = '"Avenir Next Condensed", "Bahnschrift", "Roboto Condensed", "sans-serif-condensed", "Arial Narrow", "Helvetica Neue", Impact, system-ui, sans-serif';
-const CAP_FONT = '"Segoe UI", "Helvetica Neue", Roboto, system-ui, sans-serif';
 
 export const TUTORIAL_CSS = `
 .ir-tut-root {
-  position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + clamp(12px, 12%, 120px));
-  transform: translateX(-50%); z-index: 45; width: max-content; max-width: calc(100% - 24px);
+  position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 56px);
+  transform: translateX(-50%); z-index: 45; width: max-content; max-width: calc(100% - 32px);
+  min-width: min(440px, calc(100% - 32px));
   pointer-events: none; -webkit-user-select: none; user-select: none;
-  opacity: 0; visibility: hidden; transition: opacity .22s ease, visibility 0s linear .22s;
-  font-family: ${FONT}; font-stretch: 75%; font-weight: 900; font-style: italic;
-  font-size: clamp(14px, 1.1vw + 8px, 22px); line-height: 1.1; color: #fff;
-  text-transform: uppercase; letter-spacing: .03em; text-align: center;
+  opacity: 0; visibility: hidden; transition: opacity 120ms ease-out, visibility 0s linear 120ms;
+  font-family: var(--f-ui, Bahnschrift, "DIN Alternate", "Segoe UI", sans-serif);
+  font-size: 13px; line-height: 18px; font-weight: 400; font-style: normal;
+  color: var(--ink, #E8EDF5); text-transform: none; letter-spacing: 0; text-align: left;
 }
 .ir-tut-root * { box-sizing: border-box; }
-.ir-tut-root.ir-tut-fixed { position: fixed; max-width: calc(100vw - 24px); }
-.ir-tut-root.ir-tut-on { opacity: 1; visibility: visible; transition: opacity .1s ease; }
-.ir-tut-root.ir-tut-dev-touch { bottom: calc(env(safe-area-inset-bottom, 0px) + clamp(12px, 34%, 280px)); }
+.ir-tut-root.ir-tut-fixed { position: fixed; }
+.ir-tut-root.ir-tut-on { opacity: 1; visibility: visible; transition: opacity 180ms ease-out; }
+/* the one-timer prompt sits higher, nearer the play (frame: y 620 of 900 = 202px above the bottom) */
+.ir-tut-root.ir-tut-k-urgent { min-width: min(400px, calc(100% - 32px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 202px); }
+/* stay clear of the in-game chat feed (bottom-left, x 20..380): a wide hint wraps before it reaches it */
+@media (min-width: 900px) { .ir-tut-root { max-width: calc(100% - 792px); } }
+.ir-tut-root.ir-tut-dev-touch {
+  bottom: auto; top: calc(env(safe-area-inset-top, 0px) + clamp(60px, 10.5%, 96px)); max-width: calc(100% - 32px);
+}
+
 .ir-tut-card {
-  position: relative; display: inline-flex; flex-direction: column; align-items: center; gap: .42em;
-  max-width: 100%; padding: .5em 1.1em .65em; border-radius: .45em;
-  background: linear-gradient(180deg, rgba(22,28,52,.94), rgba(6,8,18,.93));
-  border: .14em solid #ffd400;
-  box-shadow: 0 .25em 0 rgba(0,0,0,.55), 0 0 1.4em rgba(255,212,0,.28), inset 0 0 0 .08em rgba(255,255,255,.06);
-  animation: ir-tut-pop .3s cubic-bezier(.18,1.5,.4,1) both;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 32px;
+  width: 100%; min-height: 52px; padding: 7px 18px;
+  background: rgba(10, 15, 28, .92); background: color-mix(in srgb, var(--ground, #0A0F1C) 92%, transparent);
+  border: 1px solid var(--hairline-strong, #34425F); border-radius: var(--r-lg, 16px);
+  animation: ir-tut-in 180ms ease-out both;
 }
-.ir-tut-title {
-  font-size: 1.4em; line-height: 1; color: #ffd400; letter-spacing: .05em;
-  text-shadow: .05em .07em 0 #c1121f, 0 0 .45em rgba(255,212,0,.45);
-}
-.ir-tut-row { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: .45em 1.1em; }
-.ir-tut-item { display: inline-flex; align-items: center; gap: .45em; }
-.ir-tut-glyphs { display: inline-flex; align-items: center; gap: .2em; font-style: normal; flex: none; }
-.ir-tut-plus { font-size: 1.05em; color: #ffd400; padding: 0 .05em; font-style: normal; }
-.ir-tut-lbl { display: inline-flex; flex-direction: column; align-items: flex-start; text-align: left; line-height: 1.02; }
-.ir-tut-sub { font-size: .68em; color: #bcd0ff; letter-spacing: .06em; margin-top: .18em; }
-.ir-tut-note { font-size: .82em; color: #ffe7a3; letter-spacing: .05em; max-width: 24em; }
+.ir-tut-title { font-size: 15px; line-height: 18px; font-weight: 700; color: var(--ink, #E8EDF5); white-space: nowrap; }
+.ir-tut-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.ir-tut-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ir-tut-glyphs { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.ir-tut-plus { font-size: 12px; line-height: 14px; font-weight: 700; color: var(--ink-3, #6A7590); }
+.ir-tut-lbl, .ir-tut-note { font-size: 13px; line-height: 16px; color: var(--ink-2, #A1ACC0); }
 
+/* keyboard: ice keycaps with on-ice ink */
 .ir-tut-key {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 1.85em; height: 1.85em; padding: 0 .3em; border-radius: .3em;
-  font: normal 900 .9em/1 ${CAP_FONT}; letter-spacing: 0; color: #151821;
-  background: linear-gradient(180deg, #fff 0%, #e6e9f0 55%, #c3c8d4 100%);
-  border: .07em solid #7d8496; border-bottom: .24em solid #636a7d;
-  box-shadow: 0 .1em .25em rgba(0,0,0,.55);
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: none;
+  min-width: 24px; height: 24px; padding: 0 7px; border-radius: var(--r-sm, 6px);
+  background: var(--ice, #DCEAF6); color: var(--on-ice, #0A0F1C);
+  font-size: 12px; line-height: 14px; font-weight: 700; white-space: nowrap;
 }
-.ir-tut-key b { font-weight: 900; }
-.ir-tut-key.ir-tut-wide { min-width: 3.1em; padding: 0 .45em; }
-.ir-tut-key.ir-tut-wide b { font-size: .68em; letter-spacing: .04em; }
-.ir-tut-wasd { display: inline-grid; grid-template-columns: repeat(3, auto); gap: .12em; font-size: .62em; }
-.ir-tut-wasd .ir-tut-key { min-width: 1.85em; }
-.ir-tut-wasd .ir-tut-w { grid-column: 2; grid-row: 1; }
-.ir-tut-wasd .ir-tut-key:not(.ir-tut-w) { grid-row: 2; }
+.ir-tut-key b { font-weight: 700; }
+.ir-tut-wasd { display: inline-flex; gap: 3px; }
+.ir-tut-mouse { padding: 0 8px 0 7px; }
+.ir-tut-mouse-ico { display: block; width: 12px; height: 16px; flex: none; }
 
-.ir-tut-pad {
-  display: inline-flex; align-items: center; justify-content: center; width: 1.9em; height: 1.9em;
-  border-radius: 50%; font: normal 900 1em/1 ${CAP_FONT}; color: #fff; text-shadow: 0 .06em 0 rgba(0,0,0,.45);
-  border: .09em solid rgba(0,0,0,.45);
-  box-shadow: inset 0 -.14em 0 rgba(0,0,0,.28), inset 0 .1em 0 rgba(255,255,255,.35), 0 .1em .28em rgba(0,0,0,.6);
+/* gamepad: neutral circles, stick outline, RB pill (as in the settings sheet) */
+.ir-tut-pad, .ir-tut-stick {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 26px; height: 26px; border-radius: 50%;
+  font-size: 11px; line-height: 13px; font-weight: 700; color: var(--ink, #E8EDF5);
 }
-.ir-tut-pad-a { background: radial-gradient(circle at 38% 30%, #8af59a, #1fa443 62%, #167a31); }
-.ir-tut-pad-b { background: radial-gradient(circle at 38% 30%, #ff9a8f, #e0362c 62%, #a51f17); }
-.ir-tut-pad-x { background: radial-gradient(circle at 38% 30%, #93c2ff, #2a6ee8 62%, #1a4cb0); }
+.ir-tut-pad { background: var(--surface-3, #1E2940); }
+.ir-tut-stick { border: 1px solid var(--hairline-strong, #34425F); }
 .ir-tut-bumper {
-  display: inline-flex; align-items: center; justify-content: center; min-width: 2.7em; height: 1.6em; padding: 0 .45em;
-  border-radius: .8em .8em .32em .32em; font: normal 900 .8em/1 ${CAP_FONT}; color: #fff;
-  background: linear-gradient(180deg, #6b7385, #2b303c); border: .08em solid #0b0d12;
-  box-shadow: inset 0 .1em 0 rgba(255,255,255,.25), 0 .1em .28em rgba(0,0,0,.6);
+  display: inline-flex; align-items: center; height: 24px; padding: 0 6px; flex: none;
+  border-radius: var(--r-sm, 6px); background: var(--surface-3, #1E2940); color: var(--ink, #E8EDF5);
+  font-size: 11px; line-height: 13px; font-weight: 700;
 }
-.ir-tut-stick {
-  display: inline-flex; align-items: center; justify-content: center; width: 2em; height: 2em; border-radius: 50%;
-  background: radial-gradient(circle, #2a2f3b 0 58%, #11141b 60%); border: .09em solid #8f98ad;
-  box-shadow: 0 .1em .28em rgba(0,0,0,.6);
+
+/* touch: the on-screen buttons in small (shoot = ice, the rest dark with a light ring, turbo ring blue) */
+.ir-tut-tbtn {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  min-width: 24px; height: 24px; padding: 0 9px; border-radius: 12px;
+  background: rgba(10, 15, 28, .82); border: 1px solid rgba(232, 237, 245, .45); color: var(--ink, #E8EDF5);
+  font-size: 12px; line-height: 14px; font-weight: 700; white-space: nowrap;
 }
-.ir-tut-stick i {
-  display: inline-flex; align-items: center; justify-content: center; width: 2em; height: 2em; border-radius: 50%;
-  font: normal 900 .6em/1 ${CAP_FONT}; color: #fff; background: radial-gradient(circle at 40% 35%, #b4bccd, #555d71);
-  box-shadow: 0 .12em .25em rgba(0,0,0,.6);
-}
+.ir-tut-tbtn b { font-weight: 700; }
+.ir-tut-tbtn-shoot { background: var(--ice, #DCEAF6); border-color: var(--ice, #DCEAF6); color: var(--on-ice, #0A0F1C); }
+.ir-tut-tbtn-turbo { border-color: var(--turbo, #7CC4FF); }
 .ir-tut-joy {
-  position: relative; display: inline-block; width: 2.1em; height: 2.1em; border-radius: 50%;
-  border: .14em solid rgba(255,255,255,.85); background: rgba(255,255,255,.1); box-shadow: 0 0 0 .1em rgba(0,0,0,.45);
+  position: relative; display: inline-block; flex: none; width: 24px; height: 24px; border-radius: 50%;
+  background: rgba(10, 15, 28, .45); border: 2px solid rgba(232, 237, 245, .55);
 }
 .ir-tut-joy i {
-  position: absolute; left: 50%; top: 50%; width: .95em; height: .95em; margin: -.475em 0 0 -.475em; border-radius: 50%;
-  background: #fff; box-shadow: 0 .08em .2em rgba(0,0,0,.6); transform: translate(.3em, -.3em);
+  position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+  background: var(--ink, #E8EDF5); transform: translate(2px, -2px);
 }
-.ir-tut-tbtn {
-  display: inline-flex; align-items: center; justify-content: center; width: 2.7em; height: 2.7em; border-radius: 50%;
-  color: #fff; background: rgba(var(--acc), .22); border: .17em solid rgb(var(--acc));
-  box-shadow: 0 0 0 .1em rgba(0,0,0,.5), 0 0 .7em rgba(var(--acc), .5);
-  text-shadow: 0 .08em 0 rgba(0,0,0,.8);
-}
-.ir-tut-tbtn b { font-size: .58em; font-weight: 900; font-style: italic; letter-spacing: .01em; }
-.ir-tut-tbtn-shoot { --acc: 255,72,92; }
-.ir-tut-tbtn-pass { --acc: 56,214,255; }
-.ir-tut-tbtn-deke { --acc: 255,201,60; }
-.ir-tut-tbtn-turbo { --acc: 186,128,255; }
 
-.ir-tut-big { font-size: 2em; animation: ir-tut-pulse .5s ease-in-out infinite alternate; }
+/* urgent: the one-timer prompt */
 .ir-tut-urgent {
-  padding: .55em 1.4em .75em; border-color: #ff3d2e;
-  background: linear-gradient(180deg, rgba(96,10,16,.95), rgba(30,4,8,.94));
-  box-shadow: 0 .25em 0 rgba(0,0,0,.55), 0 0 1.8em rgba(255,61,46,.6);
+  flex-wrap: nowrap; justify-content: flex-start; gap: 16px; padding: 14px 18px;
+  background: #311921; background: color-mix(in srgb, var(--goal, #FF4B3E) 16%, var(--ground, #0A0F1C));
+  border-color: var(--goal, #FF4B3E); animation-duration: 200ms;
 }
-.ir-tut-urgent .ir-tut-title { font-size: 2em; color: #fff; text-shadow: .05em .07em 0 #ff3d2e, 0 0 .5em rgba(255,120,60,.85); }
-.ir-tut-urgent .ir-tut-row { gap: .5em .9em; }
-.ir-tut-urgent .ir-tut-lbl { font-size: 1.3em; }
-.ir-tut-hot { border-color: #ff7a00; background: linear-gradient(180deg, rgba(112,32,0,.95), rgba(40,8,0,.93)); box-shadow: 0 .25em 0 rgba(0,0,0,.55), 0 0 1.6em rgba(255,110,0,.55); }
-.ir-tut-hot .ir-tut-title { font-size: 1.7em; color: #ffcf3a; text-shadow: .05em .07em 0 #c1121f, 0 0 .6em rgba(255,120,0,.9); }
+.ir-tut-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ir-tut-urgent .ir-tut-title { font-size: 22px; line-height: 26px; font-style: italic; }
+.ir-tut-big { animation: ir-tut-pop 220ms ease-out both; }
+.ir-tut-big .ir-tut-key { min-width: 48px; height: 48px; padding: 0 14px; border-radius: var(--r-md, 10px); font-size: 22px; line-height: 26px; }
+.ir-tut-big .ir-tut-mouse { gap: 8px; padding: 0 14px 0 12px; font-size: 15px; line-height: 18px; }
+.ir-tut-big .ir-tut-mouse-ico { width: 18px; height: 24px; }
+.ir-tut-big .ir-tut-pad { width: 48px; height: 48px; font-size: 22px; line-height: 26px; }
+.ir-tut-big .ir-tut-tbtn { min-width: 48px; height: 48px; padding: 0 18px; border-radius: 24px; font-size: 15px; line-height: 18px; }
 
-@keyframes ir-tut-pop { from { opacity: 0; transform: translateY(.7em) scale(.8); } to { opacity: 1; transform: none; } }
-@keyframes ir-tut-pulse { from { transform: scale(1); } to { transform: scale(1.14); } }
+/* hot: on fire (fire) and sudden death (warn) */
+.ir-tut-hot {
+  --tut-acc: var(--fire, #FF8A2A);
+  background: #2C201E; background: color-mix(in srgb, var(--tut-acc) 14%, var(--ground, #0A0F1C));
+  border-color: #915324; border-color: color-mix(in srgb, var(--tut-acc) 55%, var(--ground, #0A0F1C));
+}
+.ir-tut-hot.ir-tut-warn {
+  --tut-acc: var(--warn, #F2C14E);
+  background: #2B2823; background: color-mix(in srgb, var(--tut-acc) 14%, var(--ground, #0A0F1C));
+  border-color: #7E6835; border-color: color-mix(in srgb, var(--tut-acc) 50%, var(--ground, #0A0F1C));
+}
+.ir-tut-head { display: flex; align-items: center; gap: 8px; }
+.ir-tut-ico { display: inline-flex; align-items: center; color: var(--tut-acc, #FF8A2A); }
+.ir-tut-ico-flame { display: block; width: 12px; height: 18px; }
+.ir-tut-ico-clock { display: block; width: 18px; height: 18px; }
+
+/* a phone held sideways: a top-centre band would sit on the far boards and their head tags, so the
+   hint becomes a compact card in the top-right corner beside the scoreboard (the pause button, turbo
+   bar and chat own the top-left, the buttons the bottom-right). The one-timer prompt stays centred. */
+@media (orientation: landscape) and (max-height: 540px) {
+  .ir-tut-root.ir-tut-dev-touch:not(.ir-tut-k-urgent) {
+    left: auto; right: max(14px, env(safe-area-inset-right, 0px)); top: max(10px, env(safe-area-inset-top, 0px));
+    transform: none; min-width: 0; max-width: max(200px, calc(50% - 150px));
+  }
+  .ir-tut-dev-touch:not(.ir-tut-k-urgent) .ir-tut-card {
+    min-height: 0; padding: 7px 12px; gap: 6px 12px; border-radius: var(--r-md, 10px);
+  }
+  .ir-tut-dev-touch:not(.ir-tut-k-urgent) .ir-tut-title { font-size: 13px; line-height: 16px; }
+  .ir-tut-dev-touch:not(.ir-tut-k-urgent) .ir-tut-row { gap: 6px 12px; }
+}
+
+@keyframes ir-tut-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes ir-tut-pop { from { transform: scale(.86); } to { transform: none; } }
 @media (max-width: 520px) {
-  .ir-tut-root { font-size: 14px; }
-  .ir-tut-card { padding: .45em .8em .55em; }
-  .ir-tut-row { gap: .35em .8em; }
+  .ir-tut-root, .ir-tut-root.ir-tut-k-urgent { min-width: 0; }
+  .ir-tut-card { padding: 7px 14px; gap: 6px 20px; }
+  .ir-tut-urgent { padding: 12px 14px; gap: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .ir-tut-card, .ir-tut-big { animation: none !important; }
@@ -757,7 +848,8 @@ function createView(container) {
   function classes() {
     if (!root) return;
     const fixed = container === doc.body || container === doc.documentElement;
-    root.className = 'ir-tut-root' + (fixed ? ' ir-tut-fixed' : '') + ` ir-tut-dev-${device}` + (on ? ' ir-tut-on' : '');
+    root.className = 'ir-tut-root' + (fixed ? ' ir-tut-fixed' : '') + ` ir-tut-dev-${device}` +
+      (hint ? ` ir-tut-k-${hintKind(hint)}` : '') + (on ? ' ir-tut-on' : '');
   }
   function ensure() {
     if (root) return;

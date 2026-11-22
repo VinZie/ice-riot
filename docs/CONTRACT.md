@@ -118,21 +118,37 @@ In Three.js a mesh whose "forward" is local +X needs `rotation.y = -f` to face t
 `public/render/renderer.js` (RENDER) exports:
 
 ```js
-export function createRenderer(canvas) -> renderer
+export function createRenderer(canvas, opts?) -> renderer
 renderer.setTeams([h, a])                 // recolor jerseys etc. from TEAMS[h], TEAMS[a]
 renderer.update(state, dt, events, ctx)   // state: a Snapshot-shaped object (already interpolated by CLIENT);
                                           // dt: seconds since last frame; events: events whose time has come this frame
                                           // (may be []); ctx: { myId: clientId, names: {clientId: name} }
+                                          // optional ctx.replay while state.replay is set (instant replay):
+                                          //   { cam: 'cast'|'net'|'puck'|'glass', goal: {x, z} | null, glass: {x, z, w} | null }
+                                          //   cast = broadcast view (glass: pan to that panel, weight w 0..1),
+                                          //   net = goal cam inside the net (low at the back, behind the goalie),
+                                          //   puck = behind the puck, glass = on the ice off a broken pane (picture-in-picture)
 renderer.render()
 renderer.resize(width, height)            // CSS pixels; renderer handles devicePixelRatio (cap at 2)
 renderer.dispose()
+
+// Inset mode (picture-in-picture, used by public/glass-pip.js for glass-smash replays):
+const pip = createRenderer(null, { shareWith: renderer.three.renderer })
+pip.setInset({ x, y, w, h })              // CSS px, origin bottom-left of the main canvas
+pip.update(...); pip.render()             // after the main renderer.render(): a second scene drawn scissored into
+                                          // that rect through the same WebGL context (no head plates / puck marker)
+pip.warm()                                // compile its shaders ahead of time; dispose() leaves the shared context alone
 ```
 
 The renderer owns: rink/boards/glass/nets/crowd/arena, skater + goalie models, the camera (broadcast
-side view from +Z, follows the puck smoothly, slight zoom on action), every visual effect (puck trail,
+side view from +Z, follows the skater `ctx.myId` controls smoothly, or the puck when there is none;
+slight zoom on action), the puck indicator drawn by `render/puck-marker.js` (a chevron over the puck,
+an arrow at the screen edge while it is off screen), every visual effect (puck trail,
 ON FIRE flames, hit sparks + screen shake on big hits, glass shatter shards, goal light + net ripple,
-slapshot charge glow, highlight ring + name tag on human-controlled skaters, extra-visible marker on the
-local player `ctx.myId`). When no state has arrived yet (lobby), `update(null, dt, [], ctx)` must still
+slapshot charge glow, floor ring under human-controlled skaters, and the screen-space head indicators
+drawn by `render/head-tags.js`: the local player's plate (`ctx.myId`, plus couch players in `ctx.couchIds`)
+with name, turbo and slap-charge bars and the on-fire status; name tags for remote humans and AI skaters,
+hidden by `ctx.showNames === false`; the tough-guy fist badge). When no state has arrived yet (lobby), `update(null, dt, [], ctx)` must still
 work and show a slow orbiting attract-mode camera over the empty rink.
 
 `public/main.js` (CLIENT) owns the loop: rAF -> poll input -> send `in` -> get interpolated state from

@@ -187,7 +187,9 @@ export function createEffects(scene, mirror, track) {
   }
 
   // -------------------------------------------------------------- puck, trail
-  const pr = PUCK.radius * 1.5, ph = PUCK.height * 1.5;
+  // drawn smaller than the arcade collision radius (about twice a real puck) so it sits on the blade
+  // instead of swallowing it; the puck marker (players' puck ring) keeps it easy to find
+  const pr = PUCK.radius * 0.65, ph = PUCK.height * 0.7;
   const puckGeo = new THREE.CylinderGeometry(pr, pr, ph, 24);
   const puckMat = new THREE.MeshStandardMaterial({ color: 0x0c0c0e, roughness: 0.32, metalness: 0.15, envMapIntensity: 1.2 });
   const puck = new THREE.Mesh(puckGeo, puckMat);
@@ -196,7 +198,7 @@ export function createEffects(scene, mirror, track) {
   const puckMir = new THREE.Mesh(puckGeo, puckMat);
   mirror.add(puckMir);
   // small bright rim so the black puck pops on dark boards
-  const rimGeo = new THREE.TorusGeometry(pr * 0.98, 0.012, 4, 24); rimGeo.rotateX(Math.PI / 2);
+  const rimGeo = new THREE.TorusGeometry(pr * 0.98, 0.008, 4, 24); rimGeo.rotateX(Math.PI / 2);
   const rim = new THREE.Mesh(rimGeo, new THREE.MeshBasicMaterial({ color: 0x8a8f99 }));
   puck.add(rim);
   rim.position.y = ph * 0.5;
@@ -354,6 +356,8 @@ export function createEffects(scene, mirror, track) {
     puckFire() { puckFire = 1; puckFireT = 0; },
     updatePuck,
     puck,
+    /** Rendered puck radius (m): the renderer seats a carried puck this far in front of the blade. */
+    puckRadius: pr,
     setPointScale(s) { uScale.value = s; },
     /** 0..1 multiplier for particle / shard counts (quality 'low' uses 0.5). */
     setDensity(d) { add.density = alpha.density = Math.max(0.1, Math.min(1, d)); shardShare = add.density; },

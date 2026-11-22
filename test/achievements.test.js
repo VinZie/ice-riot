@@ -1,9 +1,12 @@
 // ICE RIOT - challenges tests. Run: node test/achievements.test.js  (exit code 1 on failure)
 import {
-  createAchievements, CHALLENGES, GAME_STATS, CAREER_STATS, RULES, STORAGE_KEY,
-  createProgress, stepProgress, serializeProgress,
+  createAchievements, CHALLENGES, SECRETS, ALL_CHALLENGES, GAME_STATS, CAREER_STATS, RULES, STORAGE_KEY,
+  createProgress, stepProgress, serializeProgress, summarize, clearedLabel,
 } from '../public/achievements.js';
-import { PHASE, EVENT, TICK_RATE } from '../shared/constants.js';
+import { PHASE, EVENT, TICK_RATE, DT } from '../shared/constants.js';
+import { createGame, step, snapshot, drainEvents } from '../shared/sim.js';
+import { EV_FIGHT_END } from '../shared/sim-fight.js';
+import { FL_SHOT } from '../shared/sim-util.js';
 
 let passes = 0, failures = 0;
 function test(name, fn) {
@@ -42,16 +45,21 @@ function makeState() {
 
 const ME = 7, OTHER = 9;
 const ev = (type, fields = {}) => ({ type, ...fields });
+// Local wall-clock times (getHours() sees exactly these hours whatever the machine's time zone).
+const at = (h, min = 0) => new Date(2026, 10, 21, h, min).getTime();
+const NIGHT = at(2, 30), DAY = at(14, 0);
 
 // A scripted client: keeps a Snapshot-shaped state, feeds it with events into handle().
 class Rig {
-  constructor({ storage = memStorage(), ctl = 0, myId = ME, periods, onUnlock } = {}) {
+  constructor({ storage = memStorage(), ctl = 0, myId = ME, periods, onUnlock, clock = 1234567, init } = {}) {
     this.storage = storage;
     this.myId = myId;
     this.periods = periods;
-    this.ach = createAchievements({ storage, container: null, now: () => 1234567, onUnlock });
+    this.clock = clock;
+    this.ach = createAchievements({ storage, container: null, now: () => this.clock, onUnlock });
     this.st = makeState();
     if (ctl >= 0) this.st.p[ctl].c = myId;
+    if (init) init(this.st);                          // shape of the first state this client sees
     this.unlocks = [];
     this.feed([]);
   }
@@ -84,6 +92,9 @@ class Rig {
   steal(by = this.me()) { this.feed([ev(EVENT.STEAL, { by, from: 5 })]); }
   deke(by = this.me()) { this.feed([ev(EVENT.DEKE, { by })]); }
   fire(on = true, player = this.me()) { this.st.p[player].fire = on ? 1 : 0; this.feed([ev(EVENT.FIRE, { player, on: on ? 1 : 0 })]); }
+  post() { this.feed([ev(EVENT.POST, { x: 26.6, z: 0.9 })]); }
+  ringPost(by = this.me()) { this.shot('wrist', 0.7, by); this.advance(0.3); this.post(); }
+  fightEnd(winner = this.me(), loser = 5) { this.feed([ev(EV_FIGHT_END, { winner, loser, how: 'ko' })]); }
   endGame({ ot = false } = {}) {
     if (ot) { this.st.per = 4; this.feed([ev(EVENT.PERIOD, { period: 4 })]); }
     this.st.ph = PHASE.GAME_OVER;
@@ -144,6 +155,19 @@ const SCENARIOS = {
   'quarter-century': (r) => {
     for (let g = 0; g < 5; g++) { if (g) r.newGame(); for (let i = 0; i < 5; i++) r.goal(); r.endGame(); }
   },
+  // ---- secrets
+  'heavyweight': (r) => r.fightEnd(),
+  'bar-down': (r) => { for (let i = 0; i < 3; i++) r.ringPost(); },
+  'night-shift': (r) => { r.clock = NIGHT; r.play(1, 2); },
+  'glass-and-gas': (r) => { r.glass(); r.advance(RULES.glassGoalSecs - 2); r.goal(); },
+  'spectator-sport': (r) => {
+    r.advance(1);
+    r.setControl(-1);
+    r.newGame({ ctl: -1 });                           // the next game, from the stands
+    r.goal({ scorer: 0 }); r.goal({ scorer: 4 }); r.goal({ scorer: 4 });
+    r.advance(RULES.spectateMinSecs + 30);
+    r.endGame();
+  },
 };
 
 // ------------------------------------------------------------------------------------ data
@@ -161,38 +185,66 @@ test('challenge table is well formed', () => {
   }
   for (const t of [1, 2, 3]) ok(CHALLENGES.some((c) => c.tier === t), `no tier ${t}`);
   ok(CHALLENGES.some((c) => c.scope === 'game') && CHALLENGES.some((c) => c.scope === 'career'), 'mix of scopes');
+  // the lobby header is "of 25 cleared" with Tier I x/8 · Tier II x/11 · Tier III x/6
+  eq(CHALLENGES.length, 25, 'the 25');
+  eq([1, 2, 3].map((t) => CHALLENGES.filter((c) => c.tier === t).length), [8, 11, 6], 'per tier');
+  ok(CHALLENGES.every((c) => !c.secret), 'no secret among the 25');
+});
+
+test('secret table: 5 hidden challenges, separate from the 25, same rules', () => {
+  eq(SECRETS.length, 5, 'five secrets');
+  eq(ALL_CHALLENGES.length, CHALLENGES.length + SECRETS.length, 'ALL = 25 + secrets');
+  eq(new Set(ALL_CHALLENGES.map((c) => c.id)).size, ALL_CHALLENGES.length, 'ids unique across both');
+  for (const c of SECRETS) {
+    ok(c.secret === true, `${c.id} flagged secret`);
+    ok(c.title && c.desc && [1, 2, 3].includes(c.tier) && Number.isInteger(c.goal) && c.goal >= 1, `${c.id} fields`);
+    ok(c.scope === 'game' ? GAME_STATS.includes(c.stat) : c.scope === 'career' && CAREER_STATS.includes(c.stat), `${c.id}: scope/stat`);
+  }
+  eq(SECRETS.map((c) => c.title), ['Heavyweight', 'Bar down', 'Night shift', 'Glass and gas', 'Spectator sport'], 'titles');
+});
+
+test('copy is sentence case (no all-caps titles or descriptions)', () => {
+  for (const c of ALL_CHALLENGES) {
+    ok(c.title[0] === c.title[0].toUpperCase() && c.title.slice(1) === c.title.slice(1).toLowerCase(), `title "${c.title}"`);
+    ok(!/\b[A-Z]{2,}\b/.test(c.desc), `desc "${c.desc}"`);
+    ok(/\.$/.test(c.desc), `desc ends with a full stop: "${c.desc}"`);
+  }
+  eq(CHALLENGES.find((c) => c.id === 'ignition').desc, 'Get yourself on fire.', 'design copy');
+  eq(CHALLENGES.find((c) => c.id === 'glaziers-nightmare').title, "Glazier's nightmare", 'design copy');
 });
 
 test('list() shape', () => {
   const r = new Rig();
   const l = r.ach.list();
-  eq(l.length, CHALLENGES.length, 'length');
+  eq(l.length, ALL_CHALLENGES.length, 'length');
+  eq(l.filter((e) => e.secret).map((e) => e.id), SECRETS.map((c) => c.id), 'secrets listed last, flagged');
   for (const e of l) {
-    ok('unlocked' in e && 'unlockedAt' in e && 'progress' in e && 'goal' in e && 'title' in e && 'tier' in e, `fields of ${e.id}`);
+    ok('unlocked' in e && 'unlockedAt' in e && 'progress' in e && 'goal' in e && 'title' in e && 'tier' in e && 'isNew' in e && 'secret' in e, `fields of ${e.id}`);
     eq(e.unlocked, false, `${e.id} starts locked`);
     eq(e.unlockedAt, null, `${e.id} unlockedAt`);
     eq(e.progress, 0, `${e.id} progress`);
+    eq(e.isNew, false, `${e.id} isNew`);
   }
 });
 
 // ------------------------------------------------------------------------------------ coverage
 
 test('every challenge has a synthetic stream that unlocks it', () => {
-  const missing = CHALLENGES.filter((c) => !SCENARIOS[c.id]).map((c) => c.id);
+  const missing = ALL_CHALLENGES.filter((c) => !SCENARIOS[c.id]).map((c) => c.id);
   eq(missing, [], 'challenges without a scenario');
-  for (const c of CHALLENGES) {
+  for (const c of ALL_CHALLENGES) {
     const r = new Rig();
     SCENARIOS[c.id](r);
     const e = r.entry(c.id);
     ok(e.unlocked, `${c.id} did not unlock (progress ${e.progress}/${e.goal})`);
-    eq(e.unlockedAt, 1234567, `${c.id} unlockedAt`);
+    eq(e.unlockedAt, r.clock, `${c.id} unlockedAt`);
     eq(e.progress, e.goal, `${c.id} progress full`);
     eq(r.unlocks.filter((id) => id === c.id).length, 1, `${c.id} reported once`);
   }
 });
 
 test('the same streams unlock for an away-team player', () => {
-  for (const c of CHALLENGES) {
+  for (const c of ALL_CHALLENGES) {
     if (c.id === 'long-bomb') continue;  // position is team-specific; covered below
     const r = new Rig({ ctl: 4 });                     // mirror of id 0 on the away team
     const remap = (id) => (id >= 0 ? (id + 4) % 8 : id);
@@ -456,7 +508,9 @@ test('persistence round trip through storage', () => {
   eq(storage.getItem('other'), 'keep me', 'other keys untouched');
 
   const b = createAchievements({ storage, container: null, now: () => 999 });
-  eq(b.list(), before, 'list after reload');
+  const noNew = (l) => l.map(({ isNew, ...rest }) => rest);           // "New" is per session
+  eq(noNew(b.list()), noNew(before), 'list after reload');
+  ok(before.some((e) => e.isNew) && b.list().every((e) => !e.isNew), 'New chips only for unlocks of this session');
   eq(b.list().find((c) => c.id === 'wrecking-ball').progress, 37, 'career progress');
   eq(b.list().find((c) => c.id === 'pickpocket').progress, 2, 'best-game progress');
 
@@ -502,7 +556,7 @@ test('the default storage is resolved safely when globalThis.localStorage throws
   try {
     const a = createAchievements();
     a.handle([], makeState(), { myId: 1 });
-    eq(a.list().length, CHALLENGES.length, 'works');
+    eq(a.list().length, ALL_CHALLENGES.length, 'works');
   } finally {
     if (desc) Object.defineProperty(globalThis, 'localStorage', desc); else delete globalThis.localStorage;
   }
@@ -535,8 +589,10 @@ test('garbage input never throws; no DOM needed when container is null', () => {
   a.handle([null, 5, 'x', {}, { type: EVENT.GOAL }, { type: EVENT.SWITCH, client: 1, from: 'a', to: 99 }], { p: 'nope' }, { myId: 1 });
   a.handle([{ type: EVENT.HIT, by: 0 }], { tick: 'x', p: [null, {}, 7] }, { myId: 1 });
   a.handle([{ type: EVENT.FINAL }], { p: [] }, { myId: 1 });
-  a.openPanel(); a.closePanel();
-  eq(a.list().length, CHALLENGES.length, 'still listing');
+  a.handle([{ type: EV_FIGHT_END, winner: 'x' }, { type: EVENT.POST }, { type: EVENT.SHOT, by: 99 }, { type: EVENT.POST, x: 1 }], { p: [], k: null }, { myId: 1 });
+  a.openPanel(); a.closePanel(); a.mountView(null);
+  eq(a.list().length, ALL_CHALLENGES.length, 'still listing');
+  eq(a.progress(), { done: 0, total: 25, secretsDone: 0, secretsTotal: 5 }, 'progress');
   a.dispose();
   eq(a.handle([ev(EVENT.HIT, { by: 0, big: 1 })], makeState(), { myId: 1 }), [], 'inert after dispose');
 });
@@ -551,6 +607,274 @@ test('pure tracker works standalone (createProgress / stepProgress / serializePr
   eq([s.unlocked['bone-rattler'], s.career.hits, s.career.bigHits, s.best.bigHits], [42, 1, 1, 1], 'serialized');
   const m2 = createProgress(JSON.parse(JSON.stringify(s)));
   eq(serializeProgress(m2), s, 'round trip');
+});
+
+// ------------------------------------------------------------------------------------ secrets
+
+test('HEAVYWEIGHT: only a fight my skater wins (fightEnd.winner), never the loser or someone else', () => {
+  eq(EV_FIGHT_END, 'fightEnd', 'sim-fight event name');
+  let r = new Rig();
+  r.fightEnd(5, 0);                                   // I lost
+  r.fightEnd(1, 4);                                   // AI teammate won
+  r.st.p[4].c = OTHER; r.fightEnd(4, 1);              // another human won
+  ok(!r.unlocked('heavyweight'), 'no credit');
+  r.fightEnd(0, 5);
+  ok(r.unlocked('heavyweight'), 'my win');
+  r = new Rig({ ctl: -1 });
+  r.fightEnd(0, 5);
+  ok(!r.unlocked('heavyweight'), 'spectator');
+});
+
+test('BAR DOWN: posts off my own shots, 3 in one game', () => {
+  const r = new Rig();
+  r.ringPost(); r.ringPost();
+  eq(r.progress('bar-down'), 2, 'two posts');
+  ok(!r.unlocked('bar-down'), 'not yet');
+  r.newGame();
+  r.ringPost();
+  ok(!r.unlocked('bar-down'), 'spread over two games');
+  eq(r.progress('bar-down'), 2, 'best single game');
+  r.ringPost(); r.ringPost();
+  ok(r.unlocked('bar-down'), 'three in one game');
+});
+
+test('BAR DOWN: the post must come off my shot, untouched and recent', () => {
+  const r = new Rig();
+  const p = () => r.progress('bar-down');
+  r.shot('wrist', 0.7, 1); r.post();                                  // AI teammate's shot
+  r.shot('wrist', 0.7, 5); r.post();                                  // opponent's shot
+  r.post();                                                           // no shot at all
+  eq(p(), 0, 'not my shot');
+  r.shot(); r.advance(RULES.postShotSecs + 0.5); r.post();
+  eq(p(), 0, 'stale shot');
+  for (const type of [EVENT.SAVE, EVENT.PASS, EVENT.STEAL, EVENT.WHISTLE, EVENT.FACEOFF]) {
+    r.shot(); r.feed([ev(type, { goalie: 7, by: 5, to: 6, from: 0, x: 0, z: 0 })]); r.post();
+    eq(p(), 0, `touched in between (${type})`);
+  }
+  r.shot(); r.st.k.o = 5; r.feed([]); r.st.k.o = -1; r.post();
+  eq(p(), 0, 'puck picked up in between (state owner)');
+  r.shot(); r.post(); r.post();
+  eq(p(), 1, 'one shot rings one post');
+  r.shot('wrist', 0.7, 1); r.shot(); r.post();
+  eq(p(), 2, 'my shot after a teammate\'s');
+  r.feed([ev(EVENT.SHOT, { by: 0, power: 0.7, kind: 'wrist' }), ev(EVENT.POST, { x: 26.6, z: 0.9 })]);
+  eq(p(), 3, 'shot and post in one batch');
+});
+
+test('NIGHT SHIFT: a game I played, finished between 00:00 and 04:59 local time', () => {
+  for (const [clock, want, label] of [[at(0, 0), true, '00:00'], [NIGHT, true, '02:30'], [at(4, 59), true, '04:59'],
+    [at(5, 0), false, '05:00'], [at(23, 59), false, '23:59'], [DAY, false, '14:00'], [0, false, 'no clock']]) {
+    const r = new Rig({ clock });
+    r.play(0, 3);                                     // a loss counts: it only has to be finished
+    eq(r.unlocked('night-shift'), want, label);
+  }
+  let r = new Rig({ clock: NIGHT });
+  r.goal(); r.goal();
+  ok(!r.unlocked('night-shift'), 'unfinished game');
+  r = new Rig({ clock: DAY });
+  r.goal(); r.st.ph = PHASE.GAME_OVER; r.feed([]);    // FINAL event lost...
+  r.clock = NIGHT; r.newGame();                       // ...credited when the next game shows up
+  ok(r.unlocked('night-shift'), 'missed FINAL credited with the clock at that moment');
+  r = new Rig({ ctl: -1, clock: NIGHT });
+  r.play(1, 0);
+  ok(!r.unlocked('night-shift'), 'spectated games do not count');
+});
+
+test('GLASS AND GAS: my goal within 10 s of my own glass shatter', () => {
+  let r = new Rig();
+  r.glass(); r.advance(RULES.glassGoalSecs + 1); r.goal();
+  ok(!r.unlocked('glass-and-gas'), 'too slow');
+  r.glass(1); r.goal();
+  ok(!r.unlocked('glass-and-gas'), 'teammate broke the glass');
+  r.glass(); r.goal({ scorer: 1, assist: 0 });
+  ok(!r.unlocked('glass-and-gas'), 'teammate scored');
+  r.glass(); r.goal({ scorer: 0, team: 1 });
+  ok(!r.unlocked('glass-and-gas'), 'own goal');
+  r.glass(); r.advance(RULES.glassGoalSecs - 1); r.goal();
+  ok(r.unlocked('glass-and-gas'), 'within the window');
+  r = new Rig();
+  r.glass(); r.newGame(); r.goal();
+  ok(!r.unlocked('glass-and-gas'), 'not across games');
+});
+
+test('SPECTATOR SPORT: a whole game from the stands, opening faceoff to final horn', () => {
+  // init shapes the first state the client sees; during runs mid-game
+  const watch = ({ init, during, opts = {}, secs = RULES.spectateMinSecs + 30 } = {}) => {
+    const r = new Rig({ ctl: -1, init, ...opts });
+    r.goal({ scorer: 0 });
+    if (during) during(r);
+    r.goal({ scorer: 4 });
+    r.advance(secs);
+    r.endGame();
+    return r.unlocked('spectator-sport');
+  };
+  ok(watch(), 'start to finish');
+  ok(watch({ init: (s) => { s.tick = (RULES.spectateStartSecs - 5) * TICK_RATE; } }), 'joined during the opening seconds');
+  ok(!watch({ init: (s) => { s.tick = (RULES.spectateStartSecs + 5) * TICK_RATE; } }), 'joined late (tick)');
+  ok(!watch({ init: (s) => { s.per = 2; } }), 'joined in period 2');
+  ok(!watch({ init: (s) => { s.sc = [1, 0]; } }), 'joined after a goal');
+  ok(!watch({ init: (s) => { s.ph = PHASE.GAME_OVER; } }), 'joined at the horn');
+  ok(!watch({ init: (s) => { delete s.tick; } }), 'no tick in the state');
+  ok(!watch({ during: (r) => { r.setControl(2); r.hit(false, 2); r.setControl(-1); r.advance(1); } }), 'played a shift');
+  ok(!watch({ opts: { myId: 0 } }), 'no client id');
+  ok(!watch({ secs: 0 }), 'too short to be a whole game');
+  const r = new Rig({ ctl: -1 });
+  r.goal({ scorer: 0 }); r.advance(RULES.spectateMinSecs + 30);
+  r.advance(1); r.newGame({ ctl: -1 });               // left / aborted before the horn
+  ok(!r.unlocked('spectator-sport'), 'game never finished');
+});
+
+test('secrets stay out of the 25: progress() and summarize()', () => {
+  const r = new Rig();
+  r.fightEnd(); r.goal();
+  eq(r.ach.progress(), { done: 1, total: 25, secretsDone: 1, secretsTotal: 5 }, 'progress');
+  const s = summarize(r.ach.list());
+  eq([s.done, s.total, s.open, s.secretsDone, s.secretsTotal], [1, 25, 24, 1, 5], 'summary');
+  eq(s.tiers, [{ tier: 1, total: 8, done: 1 }, { tier: 2, total: 11, done: 0 }, { tier: 3, total: 6, done: 0 }], 'tiers');
+});
+
+test('onProgress: fires after unlocks and reset, unsubscribes', () => {
+  const r = new Rig();
+  const seen = [];
+  const off = r.ach.onProgress((p) => seen.push(p));
+  r.hit(false);                                       // progress but no unlock: quiet
+  eq(seen.length, 0, 'quiet without unlocks');
+  r.goal();
+  eq(seen.at(-1), { done: 1, total: 25, secretsDone: 0, secretsTotal: 5 }, 'after an unlock');
+  r.ach.reset();
+  eq(seen.at(-1), { done: 0, total: 25, secretsDone: 0, secretsTotal: 5 }, 'after reset');
+  const n = seen.length;
+  off();
+  r.goal();
+  eq(seen.length, n, 'unsubscribed');
+  const thrower = r.ach.onProgress(() => { throw new Error('ui bug'); });
+  r.hit(true);
+  ok(r.unlocked('bone-rattler'), 'a throwing listener does not break handle()');
+  thrower();
+  eq(typeof r.ach.onProgress(null), 'function', 'bad listener ignored');
+});
+
+test('migration: a save from the previous build keeps every unlock, timestamp and counter', () => {
+  // Verbatim shape written by the first release (v1, no secret stats).
+  const old = {
+    v: 1,
+    unlocked: { 'lamp-lighter': 1730300000000, 'victory-lap': 1730400000000, 'rink-rat': 1731000000000 },
+    career: { goals: 7, assists: 3, hits: 41, bigHits: 9, glass: 1, steals: 4, dekes: 12, fires: 0, maxSlaps: 0,
+      oneTimerGoals: 0, longSlapGoals: 0, fireGoals: 0, oneTimerAssists: 0, quickGoals: 0, hornGoals: 0,
+      games: 10, wins: 4, otWins: 0, shutoutWins: 0, blowoutWins: 0, comebackWins: 0 },
+    best: { goals: 2, assists: 1, bigHits: 3, glass: 1, steals: 2, dekes: 4 },
+  };
+  const storage = memStorage({ [STORAGE_KEY]: JSON.stringify(old) });
+  const a = createAchievements({ storage, container: null, now: () => DAY });
+  const l = a.list();
+  const by = (id) => l.find((e) => e.id === id);
+  eq([by('lamp-lighter').unlockedAt, by('victory-lap').unlockedAt, by('rink-rat').unlockedAt], [1730300000000, 1730400000000, 1731000000000], 'timestamps');
+  eq([by('wrecking-ball').progress, by('quarter-century').progress, by('spin-cycle').progress, by('demolition-shift').progress], [41, 7, 4, 3], 'counters');
+  ok(SECRETS.every((c) => !by(c.id).unlocked && by(c.id).progress === 0), 'secrets start locked');
+  eq(a.progress().done, 3, 'done');
+  a.handle([], makeState(), { myId: 1 });
+  a.handle([ev(EVENT.HIT, { by: 0, big: 1 })], (() => { const s = makeState(); s.p[0].c = 1; s.tick = 4; return s; })(), { myId: 1 });
+  const saved = JSON.parse(storage.getItem(STORAGE_KEY));
+  eq(saved.v, 1, 'format version unchanged (additive keys only)');
+  eq(saved.unlocked['lamp-lighter'], 1730300000000, 'old unlock kept on save');
+  eq([saved.career.hits, saved.career.bigHits, saved.career.fightWins, saved.best.posts], [42, 10, 0, 0], 'old counters carried, new ones added');
+});
+
+test('clearedLabel: relative for recent unlocks, a date after that', () => {
+  const now = at(14, 0);
+  eq(clearedLabel(now - 20e3, now), 'Cleared just now', 'seconds');
+  eq(clearedLabel(now - 12 * 60e3, now), 'Cleared 12 min ago', 'minutes');
+  eq(clearedLabel(now - 3 * 3600e3, now), 'Cleared 3 h ago', 'hours');
+  eq(clearedLabel(new Date(2026, 10, 14, 9, 0).getTime(), now), 'Cleared Nov 14', 'this year');
+  eq(clearedLabel(new Date(2025, 9, 30, 9, 0).getTime(), now), 'Cleared Oct 30, 2025', 'other year');
+  eq(clearedLabel(0, now), 'Cleared', 'unknown time');
+  eq(clearedLabel(null, now), 'Cleared', 'missing');
+});
+
+// ------------------------------------------------------------------------------------ real sim
+// The secrets must be detectable from what handle() really receives. Record real AI-vs-AI games
+// from shared/sim.js at the snapshot rate (events batched per snapshot like net.js releases them),
+// then replay them with the local player put on each skater in turn.
+
+function recordGame(seed) {
+  const g = createGame({ periodLength: 60 }, seed);
+  // Ground truth for BAR DOWN from sim internals: the flight the puck is on when POST is emitted.
+  const tap = () => { const a = g.events; a.push = function (e) { if (e && e.type === EVENT.POST) e.fl = g.flight && { by: g.flight.by, kind: g.flight.kind, ref: g.flight }; return Array.prototype.push.call(this, e); }; };
+  let pend = drainEvents(g); tap();
+  const frames = [], posts = new Map(), flights = new Set(), fights = [];
+  for (let i = 0; i < 60 * 60 * 20; i++) {
+    step(g, DT, {});
+    const evs = drainEvents(g); tap();
+    for (const e of evs) {
+      if (e.type === EVENT.POST) {
+        const fl = e.fl; delete e.fl;
+        // a shot flight (FL_SHOT) belongs to its shooter; the first post of each shot counts once
+        if (fl && fl.by >= 0 && fl.kind === FL_SHOT && !flights.has(fl.ref)) {
+          flights.add(fl.ref); posts.set(fl.by, (posts.get(fl.by) || 0) + 1);
+        }
+      }
+      if (e.type === EV_FIGHT_END) fights.push(e);
+    }
+    pend.push(...evs);
+    if (g.tick % 2 === 0 || g.ph === PHASE.GAME_OVER) { frames.push({ s: snapshot(g), ev: pend }); pend = []; }
+    if (g.ph === PHASE.GAME_OVER) break;
+  }
+  return { frames, posts, fights };
+}
+
+function replayGame(frames, { me = -1, myId = 9, clock = DAY, from = 0 } = {}) {
+  const ach = createAchievements({ storage: memStorage(), container: null, now: () => clock });
+  for (const f of frames.slice(from)) {
+    const s = structuredClone(f.s);
+    if (me >= 0) s.p[me].c = myId;
+    ach.handle(f.ev, s, { myId });
+  }
+  const m = ach.list();
+  return { unlocked: (id) => m.find((e) => e.id === id).unlocked, progress: (id) => m.find((e) => e.id === id).progress, ach };
+}
+
+test('real sim streams: every secret is detectable from what handle() receives', () => {
+  const SKATERS = [0, 1, 2, 4, 5, 6];
+  let postsSeen = 0, fightsSeen = 0;
+  for (const seed of [7919, 47514, 95028]) {
+    const { frames, posts, fights } = recordGame(seed);
+    ok(frames.at(-1).s.ph === PHASE.GAME_OVER, `seed ${seed} played to the horn`);
+    for (const me of SKATERS) {
+      const r = replayGame(frames, { me });
+      const truth = posts.get(me) || 0;
+      // BAR DOWN attribution (last SHOT before the POST) matches the sim's own shooter, per skater
+      const best = r.ach.list().find((e) => e.id === 'bar-down').progress;
+      eq(Math.min(best, 3), Math.min(truth, 3), `seed ${seed} skater ${me}: posts off own shots`);
+      const wins = fights.filter((f) => f.winner === me).length;
+      eq(r.unlocked('heavyweight'), wins > 0, `seed ${seed} skater ${me}: heavyweight (${wins} fight wins)`);
+      ok(r.unlocked('rink-rat') === false && r.progress('rink-rat') === 1, `seed ${seed} skater ${me}: one game credited`);
+      ok(!r.unlocked('spectator-sport'), `seed ${seed} skater ${me}: a player is not a spectator`);
+    }
+    postsSeen += [...posts.values()].reduce((a, b) => a + b, 0);
+    fightsSeen += fights.length;
+    ok(replayGame(frames).unlocked('spectator-sport'), `seed ${seed}: watched from the stands start to finish`);
+    ok(!replayGame(frames, { from: Math.floor(frames.length / 2) }).unlocked('spectator-sport'), `seed ${seed}: joined halfway`);
+    ok(!replayGame(frames, { myId: 0 }).unlocked('spectator-sport'), `seed ${seed}: no client id`);
+    ok(replayGame(frames, { me: 0, clock: NIGHT }).unlocked('night-shift'), `seed ${seed}: finished at 02:30`);
+    ok(!replayGame(frames, { me: 0, clock: DAY }).unlocked('night-shift'), `seed ${seed}: finished at 14:00`);
+  }
+  ok(postsSeen >= 3, `real games ring posts off shots (${postsSeen})`);
+  ok(fightsSeen >= 2, `real games have fights (${fightsSeen})`);
+});
+
+test('real sim streams: exact post counts per skater (tracker counter vs sim shooter)', () => {
+  // the first seed (from 47514) whose game rings several posts: any change to the sim's timing or
+  // tuning reshuffles which games do, so search a few instead of pinning one
+  let seed = 47514, rec = recordGame(seed);
+  const total = (m) => [...m.values()].reduce((a, b) => a + b, 0);
+  while (total(rec.posts) < 4 && seed < 47514 + 12) rec = recordGame(++seed);
+  const { frames, posts } = rec;
+  for (const me of [0, 1, 2, 4, 5, 6]) {
+    const m = createProgress();
+    for (const f of frames) { const s = structuredClone(f.s); s.p[me].c = 9; stepProgress(m, f.ev, s, { myId: 9 }, DAY); }
+    eq(m.career.posts, posts.get(me) || 0, `skater ${me}`);
+  }
+  ok(total(posts) >= 4, `seed ${seed} has several posts (${total(posts)})`);
 });
 
 console.log(`\n${passes} passed, ${failures} failed`);

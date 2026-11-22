@@ -3,7 +3,7 @@ import v8 from 'node:v8';
 import vm from 'node:vm';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createReplay, SLOWMO_SPEED, STORE_HZ, RESET_GAP_MS } from '../public/replay.js';
+import { createReplay, goalCaption, SLOWMO_SPEED, FINISH_SPEED, STORE_HZ, RESET_GAP_MS } from '../public/replay.js';
 import { EVENT, PSTATE, PHASE } from '../shared/constants.js';
 
 let passed = 0, failed = 0;
@@ -227,6 +227,35 @@ test('slow-mo tail duration math', () => {
   r.dispose();
 });
 
+test('slower finish at the end of the tail (finishSec / finishSpeed)', () => {
+  const r = createReplay({ seconds: 5, container: null });
+  record10s(r, { 540: [{ type: EVENT.GOAL, team: 1 }] });
+  const c = { lengthSec: 3, speed: 1, slowmoTailSec: 1, finishSec: 0.4 };
+  const want = 2 / 1 + 0.6 / SLOWMO_SPEED + 0.4 / FINISH_SPEED;
+  near(r.start(c), want, 1e-9, 'planned wall time with a finish');
+  const dt = 1 / 60;
+  const frames = playAll(r, dt);
+  near(frames.length * dt, want, dt, 'played wall time');
+  const tailStart = 9000 - 1000, finStart = 9000 - 400;
+  let sawFinish = false;
+  for (let j = 1; j < frames.length - 1; j++) {
+    const res = frames[j].res, h0 = playheadOf(frames[j - 1].res.state), h1 = playheadOf(res.state);
+    if (res.slowmo !== (h1 > tailStart + 1e-6)) throw new Error('slowmo flag');
+    if (h0 >= finStart) { near((h1 - h0) / dt, FINISH_SPEED * 1000, 1e-3, 'finish rate'); near(res.rate, FINISH_SPEED, 1e-12, 'finish rate field'); sawFinish = true; }
+    else if (h0 >= tailStart && h1 <= finStart) near((h1 - h0) / dt, SLOWMO_SPEED * 1000, 1e-3, 'tail rate');
+  }
+  assert(sawFinish, 'played the finish');
+  // maxWallSec trims the run-up, then the 0.35x part, then the finish
+  const finW = 0.4 / FINISH_SPEED;
+  near(r.start({ ...c, maxWallSec: finW + 0.5 }), finW + 0.5, 1e-9, 'trimmed into the 0.35x part');
+  near(playheadOf(r.update(1e-9).state), 9000 - (0.4 + 0.5 * SLOWMO_SPEED) * 1000, 1e-3, 'tail start after trim');
+  near(r.start({ ...c, maxWallSec: 1 }), 1, 1e-9, 'trimmed into the finish');
+  near(playheadOf(r.update(1e-9).state), 9000 - FINISH_SPEED * 1000, 1e-3, 'all finish');
+  // finishSec 0 (the default) is the plain two-speed replay
+  near(r.start({ lengthSec: 3, speed: 1, slowmoTailSec: 1 }), 2 + 1 / SLOWMO_SPEED, 1e-9, 'no finish by default');
+  r.dispose();
+});
+
 test('events re-fire exactly once per playback, in order, at the right time', () => {
   const r = createReplay({ seconds: 5, container: null });
   const E = {
@@ -428,8 +457,19 @@ test('overlay: lazy, non-blocking, shows/hides with playback, progress + slow-mo
   assert(/\.ir-replay-root\{[^}]*pointer-events:none/.test(style.textContent.replace(/\s+/g, '')), 'root ignores pointer events');
   assert(/\.ir-replay-root\*\{pointer-events:none\}/.test(style.textContent.replace(/\s+/g, '')), 'children ignore pointer events');
   assert(/ir-replay-blink/.test(style.textContent) && /letterbox|ir-replay-top/.test(style.textContent), 'blink + bars');
-  assert(byClass(root, 'ir-replay-word').textContent === 'REPLAY', 'bug text');
+  assert(byClass(root, 'ir-replay-word').textContent === 'Replay', 'bug text (sentence case)');
   assert(byClass(root, 'ir-replay-dot') && byClass(root, 'ir-replay-top') && byClass(root, 'ir-replay-bot'), 'dot + letterbox');
+  assert(byClass(root, 'ir-replay-glyph').textContent === 'A' && byClass(root, 'ir-replay-skiptxt').textContent === 'Skip', 'A Skip glyph');
+  assert(byClass(root, 'ir-replay-slo').textContent === 'Slow-mo 0.35×', `slow-mo chip: ${byClass(root, 'ir-replay-slo').textContent}`);
+  // Design tokens with fallbacks, no shouting / glow / text shadows.
+  const css = style.textContent;
+  assert(/var\(--ground,#0A0F1C\)/.test(css) && /var\(--goal,#FF4B3E\)/.test(css) && /var\(--f-ui,Bahnschrift/.test(css), 'tokens');
+  assert(!/text-shadow|box-shadow|letter-spacing|text-transform|gradient/.test(css), 'no shadow / glow / caps / gradients');
+  assert(/prefers-reduced-motion/.test(css), 'reduced motion');
+  // Root fades out in ~120 ms instead of vanishing.
+  assert(/\.ir-replay-root\{[^}]*transition:opacity 120ms/.test(css.replace(/\n\s*/g, '')), 'exit fade');
+  // The goal at frame 540 has no scorer here => no caption plate.
+  assert(!root.className.includes('ir-replay-has-cap') && r.caption() === null, 'no caption without a scorer');
   const fill = byClass(root, 'ir-replay-fill');
   const bug = byClass(root, 'ir-replay-bug');
   r.update(1.0);
@@ -445,6 +485,18 @@ test('overlay: lazy, non-blocking, shows/hides with playback, progress + slow-mo
   assert(!bug.className.includes('ir-replay-is-slow'), 'slow tag reset');
   r.stop();
   assert(!root.className.includes('ir-replay-on'), 'hidden on stop');
+  // The Skip glyph follows the device: keyboard/mouse = the bound shoot key, touch = Tap, pad = A.
+  const glyph = byClass(root, 'ir-replay-glyph');
+  r.setSkipHint({ device: 'keyboard', label: 'Left click' });
+  assert(glyph.textContent === 'Left click' && glyph.className.includes('ir-replay-key'), `keyboard skip glyph: ${glyph.textContent}`);
+  r.setSkipHint({ device: 'touch' });
+  assert(glyph.textContent === 'Tap' && glyph.className.includes('ir-replay-tap'), 'touch skip glyph');
+  r.setSkipHint({ device: 'gamepad', label: 'ignored' });
+  assert(glyph.textContent === 'A' && glyph.className === 'ir-replay-glyph', 'pad skip glyph');
+  r.setSkipHint({ device: 'keyboard', label: '' });
+  r.start({});
+  assert(glyph.textContent === 'Shoot' && r.skipHint().device === 'keyboard', 'unbound shoot key falls back to the word');
+  r.stop();
   // A second instance shares the style tag.
   const r2 = createReplay({ seconds: 5, container: doc.body });
   record10s(r2); r2.start({});
@@ -457,6 +509,92 @@ test('overlay: lazy, non-blocking, shows/hides with playback, progress + slow-mo
   record10s(r3);
   assert(r3.start({}) > 0 && r3.update(0.1), 'works with a broken container');
   r3.dispose();
+});
+
+test('caption plate: scorer from the goal event, nameOf override, explicit and disabled captions', () => {
+  // Roster names: teams [2, 4] => home = Neon Vipers (TEAMS[2]), away = Solar Flares (TEAMS[4]).
+  const doc = makeFakeDoc();
+  const r = createReplay({ seconds: 5, container: doc.body });
+  record10s(r, { 540: [{ type: EVENT.GOAL, team: 0, scorer: 1, assist: 0, oneTimer: true }] });
+  r.start({});
+  eq(r.caption(), { name: 'Crane', detail: 'one-timer from Vex', team: 2 }, 'roster caption');
+  const root = doc.body.children[0];
+  assert(root.className.includes('ir-replay-has-cap'), 'caption shown');
+  assert(byClass(root, 'ir-replay-who').textContent === 'Crane' && byClass(root, 'ir-replay-what').textContent === 'one-timer from Vex', 'caption text');
+  const logo = byClass(root, 'ir-replay-logo');
+  assert(logo && logo.tagName === 'IMG', 'crest slot');
+  r.stop();
+  // Explicit caption wins; false disables; a window that does not reach the goal has none.
+  r.start({ caption: { name: 'Blade', detail: 'one-timer from Mags', team: 0 } });
+  eq(r.caption(), { name: 'Blade', detail: 'one-timer from Mags', team: 0 }, 'explicit');
+  r.start({ caption: false });
+  assert(r.caption() === null && !root.className.includes('ir-replay-has-cap'), 'disabled');
+  r.start({ endMs: 7000 });
+  assert(r.caption() === null, 'window before the goal => no caption');
+  r.start({ caption: { name: '  ' } });
+  assert(r.caption() === null, 'blank name => no caption');
+  r.dispose();
+
+  // nameOf names the humans (controller c on the recorded player); assist / unassisted wording.
+  const r2 = createReplay({ seconds: 5, container: null, nameOf: (id, p) => (p && p.c === 7 ? 'Blade' : null) });
+  record10s(r2, { 540: [{ type: EVENT.GOAL, team: 0, scorer: 0, assist: 2 }] });
+  r2.start({});
+  eq(r2.caption(), { name: 'Blade', detail: 'assist Ito', team: 2 }, 'nameOf + assist');
+  r2.dispose();
+  const r3 = createReplay({ seconds: 5, container: null, nameOf: () => { throw new Error('boom'); } });
+  record10s(r3, { 540: [{ type: EVENT.GOAL, team: 1, scorer: 5, assist: -1 }] });
+  r3.start({});
+  eq(r3.caption(), { name: 'Mbeki', detail: 'unassisted', team: 4 }, 'throwing nameOf falls back to the roster');
+  r3.dispose();
+});
+
+test('replay cameras: findEventMs, tail + goal on each frame, tail camera chip', () => {
+  const doc = makeFakeDoc();
+  const r = createReplay({ seconds: 5, container: doc.body });
+  // shot at 8.7 s, glass at 7.5 s, goal at 9.0 s (frames at 60 fps)
+  record10s(r, {
+    450: [{ type: EVENT.GLASS, panel: 3 }], 522: [{ type: EVENT.SHOT, by: 1 }],
+    540: [{ type: EVENT.GOAL, team: 0, scorer: 1, x: 26.7, z: -0.4 }],
+  });
+  const isT = (t) => (e) => e.type === t;
+  near(r.findEventMs(isT(EVENT.SHOT), 7900, 9000), tOf(522), 1e-6, 'shot time');
+  near(r.findEventMs(isT(EVENT.GLASS), 4600, 9000), tOf(450), 1e-6, 'glass time');
+  assert(Number.isNaN(r.findEventMs(isT(EVENT.GLASS), 7600, 9000)), 'glass before the range is not found');
+  assert(Number.isNaN(r.findEventMs(isT(EVENT.SHOT), 8800, 9000)), 'shot before the range is not found');
+  assert(Number.isNaN(r.findEventMs(isT(EVENT.FIGHT || 'nope'))), 'no match => NaN');
+  assert(Number.isNaN(r.findEventMs(null)), 'bad predicate => NaN');
+  assert(Number.isNaN(r.findEventMs(() => { throw new Error('boom'); })), 'throwing predicate => NaN');
+  const fg = r.findEvent(isT(EVENT.GLASS), 4600, 9000);
+  assert(fg && fg.event.panel === 3 && Math.abs(fg.ms - tOf(450)) < 1e-6, 'findEvent returns the event and its time');
+  assert(r.findEvent(isT(EVENT.GLASS), 7600, 9000) === null, 'findEvent: none in range => null');
+  // a beat past the goal, slow-mo from the shot: every frame knows the goal; tail flips on once
+  assert(r.start({ endMs: 9300, lengthSec: 2, speed: 1, slowmoTailSec: 0.6, tailLabel: 'Goal cam' }) > 0, 'started');
+  const root = doc.body.children[0], bug = byClass(root, 'ir-replay-bug'), cam = byClass(root, 'ir-replay-cam');
+  assert(cam && cam.textContent === 'Goal cam' && bug.className.includes('ir-replay-has-cam'), 'camera chip text');
+  const frames = playAll(r, 1 / 60);
+  assert(frames.every((f) => f.res.goal && f.res.goal.x === 26.7 && f.res.goal.z === -0.4 && f.res.goal.team === 0), 'goal on every frame');
+  const firstTail = frames.findIndex((f) => f.res.tail);
+  assert(firstTail > 0 && frames.slice(firstTail).every((f) => f.res.tail && f.res.slowmo), 'tail stays on to the end');
+  assert(frames.slice(0, firstTail).every((f) => !f.res.tail), 'not in the tail during the run-up');
+  near(playheadOf(frames[firstTail].res.state), 8700, 12, 'tail starts at the shot');
+  near(playheadOf(frames[frames.length - 1].res.state), 9300, 1e-3, 'ends a beat past the goal');
+  assert(frames.every((f) => Math.abs(f.res.ms - playheadOf(f.res.state)) < 1e-6), 'ms is the record-clock playhead');
+  // no label => no chip; a window that ends before the goal => no goal
+  r.start({ tailLabel: '' });
+  assert(!bug.className.includes('ir-replay-has-cam') && cam.textContent === '', 'no chip without a label');
+  r.start({ endMs: 7000 });
+  assert(r.update(0.1).goal === null, 'window before the goal => no goal');
+  r.dispose();
+});
+
+test('goalCaption helper', () => {
+  const st = { teams: [0, 1], p: [{ id: 3, tm: 0, c: 0 }, { id: 4, tm: 1, c: 2 }] };
+  eq(goalCaption({ type: EVENT.GOAL, team: 0, scorer: 3, assist: -1 }, st), { name: 'Mertz', detail: 'unassisted', team: 0 }, 'goalie scores');
+  eq(goalCaption({ type: EVENT.GOAL, team: 1, scorer: 4, assist: 6, oneTimer: true }, st, (id) => (id === 4 ? 'Mags' : '')),
+    { name: 'Mags', detail: 'one-timer from Tamura', team: 1 }, 'one-timer, nameOf + roster');
+  eq(goalCaption({ type: EVENT.GOAL, team: 1, scorer: 5, oneTimer: true }, st), { name: 'Bergeron-Ash', detail: 'one-timer', team: 1 }, 'unassisted one-timer');
+  assert(goalCaption({ type: EVENT.GOAL, team: 0, scorer: -1 }, st) === null, 'no scorer');
+  assert(goalCaption(null, st) === null && goalCaption({ scorer: 2 }, null).name === 'Lindqvist', 'tolerant inputs');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

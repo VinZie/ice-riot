@@ -2,12 +2,18 @@
 //
 //   const r = createRenderer(canvas);
 //   r.setTeams([h, a]);                     // TEAMS indices, home = team 0
-//   r.update(state | null, dt, events, ctx) // ctx = { myId, names: {clientId: name} }
-//   r.render();
+//   r.update(state | null, dt, events, ctx) // ctx = { myId, names: {clientId: name}, couchIds?, showNames?, video? }
+//   r.render();                             // scene, then the head indicators (render/head-tags.js)
 //   r.resize(cssWidth, cssHeight);
 //   r.dispose();
 //
 // update(null, ...) = attract mode (empty lit rink, slow orbit).
+//
+// Inset mode (picture-in-picture): createRenderer(null, { shareWith: mainRenderer.three.renderer })
+// builds a second, independent scene that draws into a corner of the main canvas through the same
+// WebGL context: setInset({ x, y, w, h }) (CSS px, origin bottom-left) places it, render() draws it
+// after the main frame (no head plates or puck marker), resize() only follows the inset's aspect and
+// dispose() leaves the shared context alone. Used for the glass-smash replays (extras.js).
 import * as THREE from 'three';
 import { TEAMS, PHASE, EVENT, PSTATE } from '/shared/constants.js';
 import { createRink } from './rink.js';
@@ -15,6 +21,7 @@ import { createArena, buildEnvironment } from './arena.js';
 import { createPlayers } from './players.js';
 import { createEffects } from './effects.js';
 import { createCameraRig } from './camera.js';
+import { createPuckMarker } from './puck-marker.js';
 
 const KNOWN = new Set(Object.values(EVENT));
 const TYPE_KEYS = ['type', 't', 'e', 'ev', 'name', 'kind'];
@@ -28,16 +35,21 @@ const num = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 
 export function createRenderer(canvas, opts = {}) {
   const dbg = opts.debug || {};
-  const renderer = new THREE.WebGLRenderer({
+  const inset = !!opts.shareWith;
+  const renderer = inset ? opts.shareWith : new THREE.WebGLRenderer({
     canvas, antialias: !dbg.noAA, powerPreference: 'high-performance',
     preserveDrawingBuffer: !!opts.preserveDrawingBuffer, stencil: false,
   });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFShadowMap;
+  if (!inset) {
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+  }
+  const insetRect = { x: 0, y: 0, w: 0, h: 0 };          // inset mode: where it draws (CSS px, bottom-left origin)
+  const _full = new THREE.Vector4();
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x04060b);
@@ -80,6 +92,7 @@ export function createRenderer(canvas, opts = {}) {
   const fx = createEffects(scene, mirror, track);
   const players = createPlayers(scene, mirror, fx, track);
   const rig = createCameraRig(camera);
+  const marker = createPuckMarker();
   if (dbg.noReflect) mirror.visible = false;
   if (dbg.noCrowd) arena.crowd.visible = false;
   if (dbg.noGlass) for (const m of rink.panelMeshes) m.visible = false;
@@ -90,6 +103,8 @@ export function createRenderer(canvas, opts = {}) {
   let lastGoalT = -99, scorerId = -1;
   const scorerPos = { x: 0, z: 0 };
   const puckOff = { x: 0, z: 0 };
+  // a carried puck sits just in front of the blade (along the carrier's facing), not centred on it
+  const PUCK_SEAT = fx.puckRadius + 0.035;
   const _v2 = new THREE.Vector2();
 
   const reqTeams = [0, 1]; // last requested (raw) indices, so invalid values don't re-trigger every frame
@@ -177,12 +192,14 @@ export function createRenderer(canvas, opts = {}) {
         break;
       }
       case EVENT.SAVE: {
+        players.onEvent('save', e);
         const x = num(e.x, k ? k.x : 0), z = num(e.z, k ? k.z : 0);
         fx.iceSpray(x, z, 0, 0, 16);
         arena.hype(0.2);
         break;
       }
       case EVENT.STEAL: case EVENT.DEKE: {
+        if (ty === EVENT.STEAL) players.onEvent('steal', e);
         const p = playerOf(state, e.by);
         if (p) fx.iceSpray(p.x, p.z, num(p.vx) * 0.5, num(p.vz) * 0.5, 10);
         break;
@@ -227,8 +244,18 @@ export function createRenderer(canvas, opts = {}) {
       arena.setReduceFlashes(rf);
     }
   }
-  const camInfo = { scorer: null, fight: null };
+  const camInfo = { scorer: null, fight: null, replay: null, glass: null, follow: null };
   const fightPos = { x: 0, z: 0 };
+  const followPos = { x: 0, z: 0, vx: 0, vz: 0 };
+  /** The skater client `myId` controls (human client ids are > 0; 0 = AI), or null. */
+  function controlledBy(state, myId) {
+    if (!state || !Array.isArray(state.p) || !(typeof myId === 'number' && myId > 0)) return null;
+    for (const p of state.p) if (p && p.c === myId) return p;
+    return null;
+  }
+  // instant replay: ctx.replay = { cam: 'cast' | 'net' | 'puck', goal: {x, z} | null,
+  // glass?: {x, z, w} | null } picks the shot; glass pulls the broadcast camera onto a breaking panel
+  const REPLAY_CAST = { cam: 'cast', goal: null, glass: null };
 
   function update(state, dt, events, ctx) {
     dt = num(dt, 1 / 60);
@@ -250,24 +277,31 @@ export function createRenderer(canvas, opts = {}) {
       arena.setJumbo(teams, [0, 0], 1, 'attract');
       arena.update(dt, time, { wave: true, beams: 0.55 });
       rig.update(null, dt, null);
+      marker.update(dt, false);
     } else {
       wasNull = false;
       const ph = state.ph;
       players.update(state, dt, ctx, time);
       // puck (rides the blade wiggle when carried)
       const k = state.k;
+      let puckShown = false, prx = 0, prz = 0;
       if (k) {
         let ox = 0, oz = 0;
         const owned = k.o != null && k.o >= 0;
         if (owned) {
-          const b = players.bladeOf(k.o);
-          if (b && Math.hypot(b.x - k.x, b.z - k.z) < 0.9) { ox = b.x - k.x; oz = b.z - k.z; }
+          const b = players.bladeOf(k.o), op = playerOf(state, k.o);
+          if (b && Math.hypot(b.x - k.x, b.z - k.z) < 0.9) {
+            const f = op ? num(op.f) : 0;
+            ox = b.x + Math.cos(f) * PUCK_SEAT - k.x; oz = b.z + Math.sin(f) * PUCK_SEAT - k.z;
+          }
         }
         const a = 1 - Math.exp(-(owned ? 30 : 12) * dt);
         puckOff.x += (ox - puckOff.x) * a; puckOff.z += (oz - puckOff.z) * a;
         const rx = num(k.x) + puckOff.x, rz = num(k.z) + puckOff.z;
-        fx.updatePuck(k, rx, rz, dt, true, owned);
-        players.setPuckShadow(rx, rz, Math.max(0, num(k.y)), true);
+        const shown = !(owned && players.covering(k.o));      // a goalie's covered puck is in his glove
+        fx.updatePuck(k, rx, rz, dt, shown, owned);
+        players.setPuckShadow(rx, rz, Math.max(0, num(k.y)), shown);
+        puckShown = shown; prx = rx; prz = rz;
       } else {
         fx.updatePuck(null, 0, 0, dt, false, false);
         players.setPuckShadow(0, 0, 0, false);
@@ -283,7 +317,7 @@ export function createRenderer(canvas, opts = {}) {
         const team = sp ? sp.tm : (k && k.x < 0 ? 1 : 0);
         goalColor = (TEAMS[teams[team === 1 ? 1 : 0]] || TEAMS[0]).colors.primary;
       }
-      arena.update(dt, time, { wave: ph === PHASE.GAME_OVER || ph === PHASE.PERIOD_END, beams: ph === PHASE.GOAL ? 1 : ph === PHASE.GAME_OVER ? 0.7 : 0, goalTeamColor: goalColor });
+      arena.update(dt, time, { wave: ph === PHASE.GAME_OVER || ph === PHASE.PERIOD_END, beams: ph === PHASE.GOAL ? 1 : ph === PHASE.GAME_OVER ? 0.7 : 0, goalTeamColor: goalColor, phase: ph, fight: !!state.fi });
       // camera: in GOAL push toward the scorer; during a fight (state.fi) push toward the two fighters
       camInfo.scorer = null; camInfo.fight = null;
       if (ph === PHASE.GOAL) {
@@ -296,8 +330,30 @@ export function createRenderer(canvas, opts = {}) {
         const a = playerOf(state, fi.a), b = playerOf(state, fi.b);
         if (a && b) { fightPos.x = (num(a.x) + num(b.x)) / 2; fightPos.z = (num(a.z) + num(b.z)) / 2; camInfo.fight = fightPos; }
       }
+      camInfo.replay = null; camInfo.glass = null;
+      if (state.replay) {
+        camInfo.replay = ctx.replay && typeof ctx.replay === 'object' ? ctx.replay : REPLAY_CAST;
+        const g = camInfo.replay.glass;
+        if (g && num(g.w) > 0) camInfo.glass = g;
+      }
+      // live play: the camera follows the skater you control (it changes when you switch players);
+      // without one (spectating, attract) it follows the puck. Replays always follow the puck.
+      camInfo.follow = null;
+      const me = state.replay ? null : controlledBy(state, ctx.myId);
+      if (me) {
+        followPos.x = num(me.x); followPos.z = num(me.z); followPos.vx = num(me.vx); followPos.vz = num(me.vz);
+        camInfo.follow = followPos;
+      }
       rig.update(state, dt, camInfo);
+      // puck indicator while the camera follows a skater: chevron over the puck, edge arrow off screen
+      const live = !state.replay && !state.fi && (ph === PHASE.PLAY || ph === PHASE.FACEOFF);
+      marker.update(dt, live && !!me && puckShown, prx, k ? num(k.y) : 0, prz, !!me && !!k && k.o === me.id);
+      // the puck cam flies through whoever the puck passes: don't draw players right at the lens
+      if (rig.mode === 'puck') players.cullNear(camera.position.x, camera.position.z, 1.0);
     }
+    // a tall (portrait) screen's high camera looks down through the hanging scoreboard: hide it then
+    const jumboOn = !rig.overJumbo;
+    if (arena.jumbo.visible !== jumboOn) arena.jumbo.visible = jumboOn;
     rink.update(dt, time);
     fx.update(dt);
   }
@@ -308,7 +364,7 @@ export function createRenderer(canvas, opts = {}) {
   const dyn = { on: opts.dynamicResolution !== false, last: 0, acc: 0, n: 0, slow: 0, fast: 0, scale: 1, shadowOff: false, mirrorOff: false };
   let quality = '', prCap = 2;
   const basePR = () => Math.min(window.devicePixelRatio || 1, prCap);
-  function applyPR() { renderer.setPixelRatio(basePR() * dyn.scale); }
+  function applyPR() { if (!inset) renderer.setPixelRatio(basePR() * dyn.scale); }
   function setShadows(on) {
     if (dbg.noShadow) on = false;
     if (key.castShadow !== on) key.castShadow = on; // toggling rebuilds lit shaders once
@@ -324,7 +380,7 @@ export function createRenderer(canvas, opts = {}) {
     if (q === quality) return;
     quality = q;
     prCap = q === 'medium' ? 1.5 : q === 'low' ? 1 : 2;
-    dyn.on = q === 'auto' && opts.dynamicResolution !== false;
+    dyn.on = q === 'auto' && opts.dynamicResolution !== false && !inset;
     dyn.acc = 0; dyn.n = 0; dyn.slow = 0; dyn.fast = 0; dyn.last = 0;
     if (q !== 'auto') dyn.scale = 1;
     setShadows(q === 'low' ? false : q === 'auto' ? !dyn.shadowOff : true);
@@ -358,21 +414,51 @@ export function createRenderer(canvas, opts = {}) {
   }
 
   function render() {
+    if (inset) { renderInset(); return; }
     if (dyn.on) tickDyn();
     renderer.getDrawingBufferSize(_v2);
     fx.setPointScale(_v2.y / (2 * Math.tan(camera.fov * Math.PI / 360)));
     renderer.render(scene, camera);
+    // head indicators: screen-space plates, projected with the camera this frame was drawn with
+    // (their pass adds to this frame's renderer.info instead of resetting it)
+    players.renderTags(renderer, camera);
+    marker.render(renderer, camera);
+  }
+
+  // inset mode: draw into insetRect only (scissored, so the main frame around it is untouched)
+  function renderInset() {
+    const r = insetRect;
+    if (!(r.w >= 2 && r.h >= 2)) return;
+    renderer.getViewport(_full);                   // (CSS px) restored afterwards
+    const pr = renderer.getPixelRatio();
+    fx.setPointScale((r.h * pr) / (2 * Math.tan(camera.fov * Math.PI / 360)));
+    renderer.setViewport(r.x, r.y, r.w, r.h);
+    renderer.setScissor(r.x, r.y, r.w, r.h);
+    renderer.setScissorTest(true);
+    const ar = renderer.info.autoReset;
+    renderer.info.autoReset = false;               // count into the frame's draw stats
+    renderer.render(scene, camera);
+    renderer.info.autoReset = ar;
+    renderer.setScissorTest(false);
+    renderer.setViewport(_full);
+  }
+  /** Inset mode: where to draw, in CSS px with the origin at the bottom-left of the canvas. */
+  function setInset(rect) {
+    const w = Math.max(0, Math.floor(num(rect && rect.w))), h = Math.max(0, Math.floor(num(rect && rect.h)));
+    insetRect.x = Math.floor(num(rect && rect.x)); insetRect.y = Math.floor(num(rect && rect.y));
+    if (w !== insetRect.w || h !== insetRect.h) { insetRect.w = w; insetRect.h = h; if (w > 0 && h > 0) rig.setAspect(w / h); }
   }
 
   function resize(w, h) {
+    if (inset) return;                             // follows setInset() instead
     w = Math.max(1, Math.floor(num(w, canvas.clientWidth || 1280)));
     h = Math.max(1, Math.floor(num(h, canvas.clientHeight || 720)));
     renderer.setPixelRatio(basePR() * dyn.scale);
     renderer.setSize(w, h, true);
     rig.setAspect(w / h);
   }
-  setQuality('auto');
-  resize(canvas.clientWidth || window.innerWidth || 1280, canvas.clientHeight || window.innerHeight || 720);
+  setQuality(inset ? 'low' : 'auto');
+  if (!inset) resize(canvas.clientWidth || window.innerWidth || 1280, canvas.clientHeight || window.innerHeight || 720);
 
   let disposed = false;
   function dispose() {
@@ -390,15 +476,18 @@ export function createRenderer(canvas, opts = {}) {
     }
     for (const t of textures) t.dispose();
     players.dispose();
+    marker.dispose();
     envRT.dispose();
     if (key.shadow.map) key.shadow.map.dispose();
-    renderer.dispose();
+    if (!inset) renderer.dispose();                // an inset leaves the shared context alone
   }
 
   return {
-    setTeams, update, render, resize, dispose,
+    setTeams, update, render, resize, dispose, setInset,
+    /** Compile this scene's shaders now (an inset warms up before its first showing). */
+    warm() { try { renderer.compile(scene, camera); } catch { /* optional */ } },
     // debug helpers (not part of the contract)
-    info: () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures, programs: renderer.info.programs ? renderer.info.programs.length : 0, ...fx.stats(), crowd: arena.crowdCount }),
+    info: () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures, programs: renderer.info.programs ? renderer.info.programs.length : 0, ...fx.stats(), ...players.tagStats(), crowd: arena.crowdCount }),
     three: { renderer, scene, camera },
   };
 }

@@ -240,7 +240,7 @@ export function createCouch({ wsUrl, room = 'main', reservePads = 1, namePrefix 
         break;
       }
       case 'err':
-        changed(`${s.name}: ${m.msg != null ? String(m.msg) : 'error'}`);
+        changed(`${s.name}: ${m.msg != null ? String(m.msg) : 'something went wrong'}`);
         break;
       default: break;
     }
@@ -251,7 +251,7 @@ export function createCouch({ wsUrl, room = 'main', reservePads = 1, namePrefix 
     const WS = globalThis.WebSocket;
     if (typeof WS !== 'function') {
       leave(s);
-      changed(`${s.name}: WebSocket not available`);
+      changed(`${s.name} can't connect: this browser has no WebSocket support`);
       return;
     }
     s.clientId = 0; s.team = -1; s.lobby = null; s.inGame = false;

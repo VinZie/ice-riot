@@ -11,6 +11,11 @@ import { givePuck, loosePuck, doPass, touch, glide, setState } from './sim-playe
 const { SKATE, DOWN, SAVE, CELEBRATE, DEKE } = PSTATE;
 export const SAVE_T = 0.55;
 const HOLD_T = 0.6;
+// A shot's fate is decided this far out from the goal line (a pass or loose puck: when it reaches
+// the goalie). A save is then made when the puck gets to him; a goal is steered so its path clears
+// his body by BODY (centre to puck) and still goes in at least POST_IN inside a post - if it has to,
+// he slides the wrong way, at up to BEAT_VMAX - and he can't move into the path until it's by him.
+const DECIDE = 6.0, BODY = 0.58, POST_IN = 0.15, BEAT_VMAX = 6.5;
 
 // Difficulty nudges the save chance of the all-AI team's goalie when humans play it.
 function goalieBonus(game, team) {
@@ -21,8 +26,11 @@ function goalieBonus(game, team) {
 }
 
 // Probability that goalie g stops a puck released at (x0,z0) with `speed`, crossing the
-// goal line at (zc, yc). `lat` = goalie lateral speed relative to the shot direction.
-export function saveProb(game, g, x0, z0, speed, kind, fire, zc, yc, lat) {
+// goal line at (zc, yc). `lat` = goalie lateral speed relative to the shot direction. `tArr`
+// (optional): seconds until the puck reaches him - a save decided early is judged on the goalie as
+// he will be then (still diving from the last save or not, mostly done shuffling across).
+export function saveProb(game, g, x0, z0, speed, kind, fire, zc, yc, lat, tArr = 0) {
+  if (tArr > 0) lat *= clamp(1 - tArr / 0.25, 0, 1);
   const side = defendSide(g.tm);
   const ahead = Math.max(0.1, GX - side * x0);
   const dist = Math.hypot(ahead, z0);
@@ -37,18 +45,30 @@ export function saveProb(game, g, x0, z0, speed, kind, fire, zc, yc, lat) {
   if (kind === 'onetimer') p -= 0.05 + Math.min(0.08, lat * 0.03);  // goalie still sliding across
   else p -= Math.min(0.06, lat * 0.02);
   if (fire) p -= 0.12;
-  if (g.s === SAVE) p -= 0.25;                // already committed to a dive
+  if (g.s === SAVE && g.sT + tArr < SAVE_T) p -= 0.25;   // already committed to a dive
   else if (g.s === DOWN) p -= 0.6;
   p += goalieBonus(game, g.tm);
   return clamp(p, 0.04, 0.97);
 }
 
-// Called every puck substep while the puck is loose in PLAY. Returns true if a save
-// changed the puck's motion.
+// Called every puck substep while the puck is loose in PLAY. Returns true if the save roll
+// changed the puck's motion (a save, or a goal steered past the goalie).
 export function checkSave(game) {
   const fl = game.flight;
-  if (!fl || fl.saveDone) return false;
+  if (!fl) return false;
   const pk = game.puck;
+  if (fl.saveDone) {
+    // a save decided early: he makes it when the puck gets to him (or reaches his line)
+    if (fl.saveG >= 0) {
+      const g = game.players[fl.saveG];
+      const dx = pk.x - g.x, dz = pk.z - g.z, reach = g.s === SAVE ? 1.35 : 1.12;
+      if (dx * dx + dz * dz <= reach * reach || defendSide(g.tm) * (pk.x - g.x) >= 0) {
+        fl.saveG = -1;
+        if (g.s !== DOWN) { makeSave(game, g, Math.hypot(pk.vx, pk.vz)); return true; }
+      }
+    }
+    return false;
+  }
   for (let t = 0; t < 2; t++) {
     const g = game.players[t * 4 + 3];
     if (fl.team === g.tm && fl.kind !== FL_LOOSE) continue;  // own team's pass/shot
@@ -59,22 +79,76 @@ export function checkSave(game) {
     if (u > 0.02) continue;
     const dx = pk.x - g.x, dz = pk.z - g.z;
     const reach = g.s === SAVE ? 1.35 : 1.12;
-    if (dx * dx + dz * dz > reach * reach || pk.y > 1.75) continue;
+    const inReach = dx * dx + dz * dz <= reach * reach;
+    if (!inReach && !(fl.kind === FL_SHOT && -u <= DECIDE)) continue;
+    if (pk.y > 1.75) continue;
     // will it hit the net?
     const tt = -u / vu;
     const zc = pk.z + pk.vz * tt;
     const yc = pk.y > 0.001 || pk.vy > 0 ? pk.y + pk.vy * tt - 0.5 * GRAV * tt * tt : 0;
     if (Math.abs(zc) > HW + 0.04 || yc > GH + 0.04) continue;  // wide/high: let it go
+    // deciding a shot early: only one whose path comes near him (else he rolls when it's in reach)
+    if (!inReach && distPointSeg(g.x, g.z, pk.x, pk.z, pk.x + pk.vx * tt, zc) > reach + 0.3) continue;
     fl.saveDone = true;
     const sp = Math.hypot(pk.vx, pk.vz);
     const lat = Math.abs((-pk.vz * g.vx + pk.vx * g.vz) / (sp || 1));
-    const ps = saveProb(game, g, fl.x0, fl.z0, sp, fl.kind === FL_SHOT ? fl.shotKind : 'loose', fl.fire, zc, yc, lat);
-    if (g.s !== DOWN && rand(game) < ps) { makeSave(game, g, sp); return true; }
+    const tArr = inReach ? 0 : Math.max(0, (g.x - pk.x) / pk.vx - 0.03);   // ~ when it gets in his reach
+    const ps = saveProb(game, g, fl.x0, fl.z0, sp, fl.kind === FL_SHOT ? fl.shotKind : 'loose', fl.fire, zc, yc, lat, tArr);
+    let save = g.s !== DOWN && rand(game) < ps;
+    if (!save && g.s !== DOWN && !beatGoalie(game, g, tt)) save = true;   // no way past him that goes in
+    if (save) {
+      if (inReach) { makeSave(game, g, sp); return true; }
+      fl.saveG = g.id;
+      return false;
+    }
     fl.beaten = true;
-    if (g.s === SKATE) { setState(g, SAVE); g.vz += clamp((zc - g.z) * 2, -1.5, 1.5); } // late dive
-    return false;
+    return true;
   }
   return false;
+}
+
+// A goal: make sure the puck's path clears his body. Already clear: he just mustn't move into it.
+// Else bend it past him on the side it is beating him (still inside the post), or - when that would
+// go wide - aim it inside the post and have him slide the other way (he bit on it). `tl` = time to
+// the goal line. Returns false when there's no way past him in time (then he saves it after all).
+function beatGoalie(game, g, tl) {
+  const pk = game.puck;
+  const tg = (g.x - pk.x) / pk.vx;                     // time to his plane
+  if (!(tg > 0.004)) return true;                      // level with or past him already
+  const yg = pk.y > 0.001 || pk.vy > 0 ? pk.y + pk.vy * tg - 0.5 * GRAV * tg * tg : 0;
+  if (yg > 1.5) return true;                           // over him
+  const zg = pk.z + pk.vz * tg, k = tl / tg;           // k: goal-line distance / his-plane distance
+  const lim = HW - POST_IN;
+  const begin = (pz, stay) => { g.beatT = tg + 0.05; g.beatZ = pz; g.beatS = stay; };
+  if (Math.abs(zg - g.z) >= BODY) { begin(zg, g.z >= zg ? 1 : -1); return true; }
+  const first = Math.sign(pk.z + pk.vz * tl - g.z) || Math.sign(zg - g.z) || (g.z > 0 ? -1 : 1);
+  for (const s2 of [first, -first]) {
+    const zg1 = g.z + s2 * BODY;                       // just past him on that side...
+    if (Math.abs(pk.z + (zg1 - pk.z) * k) <= lim) { pk.vz = (zg1 - pk.z) / tg; begin(zg1, -s2); return true; }
+    const zg2 = pk.z + (s2 * lim - pk.z) / k;          // ...or inside that post, and he slides off it
+    if (Math.abs(zg2 - s2 * BODY - g.z) <= BEAT_VMAX * tg * 0.8) { pk.vz = (zg2 - pk.z) / tg; begin(zg2, -s2); return true; }
+  }
+  return false;
+}
+
+// While a goal is on its way past him: keep his body (centre) BODY clear of its path on his side
+// (g.beatS), sliding out at up to BEAT_VMAX if he has to. Once it's by him he dives, too late.
+function holdBeat(game, g, dt) {
+  const pk = game.puck, fl = game.flight;
+  if (!(fl && fl.beaten && pk.o < 0)) { g.beatT = 0; return; }   // blocked / picked up / scored
+  g.beatT -= dt;
+  if (g.beatT <= 0 || defendSide(g.tm) * (pk.x - g.x) > 0) { lateDive(g); return; }
+  const zLim = g.beatZ + g.beatS * BODY, nz = g.z + g.vz * dt;
+  if (g.beatS * (nz - zLim) >= 0) return;
+  if (g.beatS * (g.z - zLim) >= 0) g.vz = (zLim - g.z) / dt;   // stop at the edge of the path
+  else g.vz = clamp((zLim - g.z) / Math.max(dt, g.beatT * 0.8), -BEAT_VMAX, BEAT_VMAX);
+}
+
+/** The puck is past him (or in): end a beat with a late dive. Also called when the goal is scored. */
+export function lateDive(g) {
+  if (!(g.beatT > 0)) return;
+  g.beatT = 0;
+  if (g.s === SKATE) setState(g, SAVE);
 }
 
 function makeSave(game, g, sp) {
@@ -147,6 +221,7 @@ export function updateGoalie(game, g, dt) {
   if (g.s === CELEBRATE) { glide(g, 4, dt); return; }
   if (g.s === SAVE) {
     glide(g, 6, dt);
+    if (g.beatT > 0) holdBeat(game, g, dt);
     if (g.sT >= SAVE_T) setState(g, SKATE);
     else if (pk.o !== g.id) return;
   }
@@ -186,6 +261,7 @@ export function updateGoalie(game, g, dt) {
   const dl = Math.hypot(dvx, dvz), st = 30 * dt;
   if (dl <= st) { g.vx += dvx; g.vz += dvz; } else { g.vx += (dvx / dl) * st; g.vz += (dvz / dl) * st; }
   g.f = turnToward(g.f, Math.atan2(pk.z - g.z, pk.x - g.x), 10 * dt);
+  if (g.beatT > 0) holdBeat(game, g, dt);                // a goal on its way: don't step into its path
 
   // poke check a carrier who wanders into the blue paint
   if (pk.o >= 0 && game.ph === PHASE.PLAY) {

@@ -290,27 +290,27 @@ function passFrom(game, p, mx, mz) {
   else doPass(game, p, Math.cos(p.f), Math.sin(p.f), null);
 }
 
-// Pass toward the teammate best aligned with (dx,dz). Skaters preferred; the goalie is
-// a last resort. `forced` (optional) picks the receiver directly (goalie outlet passes).
+// Pass toward the teammate skater best aligned with (dx,dz). Never to your own goalie: with
+// nobody in that direction it goes to the closest-aligned skater instead. `forced`
+// (optional) picks the receiver directly (goalie outlet passes).
 export function doPass(game, p, dx, dz, forced) {
   const pk = game.puck;
   if (pk.o !== p.id) return false;
   const dl = Math.hypot(dx, dz) || 1;
   dx /= dl; dz /= dl;
-  let best = null, bs = 1e9, any = null, as = 1e9, gBest = null;
+  let best = null, bs = 1e9, any = null, as = 1e9;
   if (!forced) {
     for (const q of game.players) {
-      if (q.tm !== p.tm || q === p) continue;
+      if (q.tm !== p.tm || q === p || q.g) continue;
       const vx = q.x - pk.x, vz = q.z - pk.z;
       const d = Math.hypot(vx, vz) || 1e-3;
       const ang = Math.acos(clamp((vx * dx + vz * dz) / d, -1, 1));
-      if (q.g) { if (ang < 0.7) gBest = q; continue; }
       const s = ang + d * 0.012 + (q.s === DOWN ? 1.5 : 0);
       if (ang < 1.35 && s < bs) { bs = s; best = q; }
       if (s < as) { as = s; any = q; }
     }
   }
-  const r = forced || best || gBest || any;
+  const r = forced || best || any;
   if (!r) return false;
 
   const d0 = Math.hypot(r.x - pk.x, r.z - pk.z);

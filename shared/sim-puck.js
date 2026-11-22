@@ -88,7 +88,7 @@ function substep(game, h) {
       if (fl) {
         // off the boards it's just a loose puck (anyone can play it)
         fl.kind = FL_LOOSE; fl.shotKind = '';
-        fl.saveDone = false; fl.beaten = false; fl.rolled = 0;
+        fl.saveDone = false; fl.saveG = -1; fl.beaten = false; fl.rolled = 0;
         fl.x0 = pk.x; fl.z0 = pk.z;
       }
     }
@@ -188,8 +188,10 @@ export function checkPickups(game, prevX, prevZ) {
   for (const p of game.players) {
     if (p.pickCd > 0 || p.s === DOWN || p.s === CELEBRATE || p.y > 0.3) continue;
     if (p.g) {
-      // goalies cover slow pucks in their own area
+      // goalies cover slow pucks in their own area, but not a teammate's pass (no passing
+      // back to your own goalie; an expired pass turns loose and can be covered then)
       if (pk.y > 1.0 || sp > 9 || (fl && fl.beaten)) continue;
+      if (fl && fl.kind === FL_PASS && fl.team === p.tm) continue;
       const side = defendSide(p.tm);
       if (side * pk.x - GX > 0.3 || Math.hypot(pk.x - side * GX, pk.z) > 3.2) continue;
       if (distPointSeg(p.x, p.z, prevX, prevZ, pk.x, pk.z) > 0.9) continue;

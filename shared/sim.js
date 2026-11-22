@@ -22,7 +22,7 @@ import {
 } from './sim-util.js';
 import { controlSkater, addHeat, extinguish, igniteFire, glide, setState, shatterGlass, HEAT_COOL } from './sim-player.js';
 import { tickPendingFight, fightTick, fightSnap, EV_FIGHT_END } from './sim-fight.js';
-import { updateGoalie } from './sim-goalie.js';
+import { updateGoalie, lateDive } from './sim-goalie.js';
 import { stepPuck, checkPickups } from './sim-puck.js';
 import { aiInput, makeAi, resetAi } from './sim-ai.js';
 
@@ -46,6 +46,7 @@ function makePlayer(team, k, def) {
     holdT: 0, possT: 0, downDur: 0, checkBig: false, hitDone: false, whiff: false,
     pokeDone: false, dekeSide: 1, pickCd: 0, dekeCd: 0, checkCd: 0, pokeCd: 0,
     otTick: -1, recvT: -1, mx: 0, mz: 0, glassT: 0, glassBy: -1, glassPow: 0,
+    beatT: 0, beatZ: 0, beatS: 1,      // goalie: a goal is on its way past him (sim-goalie.js beatGoalie)
     ai: makeAi(),
   };
 }
@@ -180,7 +181,7 @@ function startFaceoff(game, spot) {
     p.vx = 0; p.vy = 0; p.vz = 0; p.y = 0;
     setState(p, SKATE);
     p.holdT = 0; p.possT = 0; p.otTick = -1; p.recvT = -1; p.glassT = 0;
-    p.pickCd = 0; p.dekeCd = 0; p.checkCd = 0; p.pokeCd = 0;
+    p.pickCd = 0; p.dekeCd = 0; p.checkCd = 0; p.pokeCd = 0; p.beatT = 0;
     resetAi(p, game);
   }
 }
@@ -215,6 +216,7 @@ function scoreGoal(game, team) {
   const oneTimer = !!fl && fl.kind === FL_SHOT && fl.shotKind === 'onetimer' && fl.by === scorer;
   const pk = game.puck;
   emit(game, EVENT.GOAL, { team, scorer, assist, oneTimer, x: r3(pk.x), z: r3(pk.z) });
+  lateDive(game.players[(1 - team) * 4 + GOALIE_K]);    // beaten: he dives as it goes in
   for (const p of game.players) if (p.tm !== team) extinguish(game, p);   // scored on: heat resets
   if (scorer >= 0) {
     const s = game.players[scorer];

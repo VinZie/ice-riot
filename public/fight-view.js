@@ -1,19 +1,112 @@
-// ICE RIOT - fight mini-game overlay ("the scrap"). 2D canvas, procedural art only.
+// ICE RIOT - fight mini-game overlay ("the scrap"). The scene (arena, crowd, fighters, particles)
+// is procedural 2D canvas art; the HUD, titles and pop-ups are a DOM layer on top of it for crisp
+// type (design "Final · in game / Fight · the scrap").
 //
 //   import { createFightView } from './fight-view.js';
 //   const view = createFightView(containerElement);
-//   view.show(fightSnap, { nameA, nameB, colorA, colorB, numA?, numB?, hint?, reward? });
+//   view.show(fightSnap, { nameA, nameB, colorA, colorB, numA?, numB?, ctrlA?, ctrlB?, teamA?, teamB?,
+//                          hint?, reward?, shake?, flashes? });
 //   view.update(fightSnap, dt, fightEvents);   // every animation frame while shown (events may be [])
 //   view.hide();                               // fades out (CSS), keeps the canvas for the next fight
-//   view.dispose();                            // removes canvas + injected <style>
+//   view.dispose();                            // removes the overlay + injected <style>
 //
 // fightSnap = fightSnapshot() from shared/fight.js. colorA/colorB: 0xRRGGBB, '#rrggbb', or a TEAMS
-// `colors` object {primary, secondary, accent}. The view runs no timers of its own: everything
-// advances inside update(). The overlay is pointer-events:none and fills the container.
+// `colors` object {primary, secondary, accent}. nameA/nameB: the skaters' (roster) names, shown as
+// given (sentence case). ctrlA/ctrlB: who controls each fighter (a player name, or 'AI'), shown next
+// to the name. teamA/teamB: TEAMS indices, for the crest on the winner banner. hint: the controls
+// line from extras, e.g. 'Left click jab · L haymaker · Right click block · L-Shift dodge', drawn as
+// key tiles (items split on '·', "<key> <action>"; mouse keys get the mouse glyph); false = no hint
+// band (spectators). reward: second line of the winner banner (false = none). shake: camera shake
+// scale 0..1 (settings cameraShake; false = 0). flashes: false turns off full-screen flashes (settings
+// reduceFlashes). Both are also damped under prefers-reduced-motion. The view runs no timers of its
+// own: everything advances inside update(). The overlay is pointer-events:none and fills the container.
 
 import { FIGHT } from '../shared/fight.js';
 
-const FONT = `'Arial Black','Segoe UI Black','Franklin Gothic Heavy',Impact,system-ui,sans-serif`;
+const FONT = `'Arial Black','Segoe UI Black','Franklin Gothic Heavy',Impact,system-ui,sans-serif`;   // scene art only (boards, jersey numbers)
+
+// ------------------------------------------------------------------ copy + pure helpers (Node-testable)
+export const FIGHT_COPY = Object.freeze({
+  tempers: 'Tempers boil over', gloves: 'Gloves off!', brawl: 'Brawl!', ko: 'Lights out!', time: 'Time!',
+  counter: 'Counter!', haymaker: 'Haymaker!', blocked: 'Blocked', guardBreak: 'Guard break!',
+  whiff: 'Whiff!', interrupted: 'Interrupted!', tieUp: 'Tie-up!',
+  reward: 'Full turbo + on fire', clock: 'The scrap', counterReady: 'Counter ready',
+  stamina: 'Stamina', staminaLow: 'Stamina low', dodgeReady: 'Dodge ready', dodgeWait: 'Dodge recharging',
+});
+export const winsText = (name) => `${name} wins the scrap`;
+export const comboText = (n) => `${n} hit combo`;
+export const DEFAULT_HINT = 'Left click jab · L haymaker · Right click block · L-Shift dodge';
+export const LOW_HP = 30;   // the HP number turns goal-red below this
+
+const MOUSE_RE = /^(left|right|middle)[\s-]*(?:click|button|mouse)?$|^mouse\s*([012])$/i;
+const MOUSE_IDX = ['left', 'middle', 'right'];
+function keyText(k) {
+  // 'SHIFT' -> 'Shift', 'L-SHIFT' -> 'L-Shift'; single letters, digits and glyphs stay as they are
+  return k.split(/(\s+|-)/).map((w) => (w.length > 1 && w === w.toUpperCase() && /[A-Z]/.test(w) ? w[0] + w.slice(1).toLowerCase() : w)).join('');
+}
+const sentence = (s) => (s ? s[0].toUpperCase() + s.slice(1).toLowerCase() : s);
+
+/**
+ * Split a controls hint into key tiles: 'Left click jab · L haymaker' ->
+ * [{ key: 'Left click', mouse: 'left', label: 'Jab' }, { key: 'L', mouse: null, label: 'Haymaker' }].
+ * Items are separated by '·'; each is "<key> <action>" (the action is the last word) or
+ * "<key> = <action>". An item with no key becomes { key: '', mouse: null, label }.
+ */
+export function parseHint(hint) {
+  if (typeof hint !== 'string') return [];
+  const out = [];
+  for (const raw of hint.split('·')) {
+    const item = raw.trim().replace(/\s+/g, ' ');
+    if (!item) continue;
+    let key = '', label = item, m;
+    if ((m = /^(.+?)\s*=\s*(.+)$/.exec(item))) { key = m[1]; label = m[2]; }
+    else if ((m = /^(.*\S)\s+(\S+)$/.exec(item))) { key = m[1]; label = m[2]; }
+    const mm = MOUSE_RE.exec(key);
+    const mouse = mm ? (mm[1] ? mm[1].toLowerCase() : MOUSE_IDX[+mm[2]]) : null;
+    out.push({ key: mouse ? `${sentence(mouse)} click` : keyText(key), mouse, label: sentence(label) });
+  }
+  return out;
+}
+
+/** Pop-up for a fight event: { text, side } (side 0 = fighter A, 1 = B), or null. by = side of e.by. */
+export function popFor(e, by) {
+  if (!e || typeof e !== 'object' || by < 0) return null;
+  const type = e.type === 'fight' ? e.sub : e.type;
+  if (type === 'punch') {
+    if (e.int) return { text: FIGHT_COPY.interrupted, side: 1 - by };
+    if (e.ctr) return { text: FIGHT_COPY.counter, side: by };
+    if (e.kind === 'hay') return { text: FIGHT_COPY.haymaker, side: by };
+    return null;
+  }
+  if (type === 'block') return { text: e.brk ? FIGHT_COPY.guardBreak : FIGHT_COPY.blocked, side: by };
+  if (type === 'dodge') return { text: FIGHT_COPY.whiff, side: 1 - by };
+  if (type === 'grab' && e.clash) return { text: FIGHT_COPY.tieUp, side: by };
+  return null;
+}
+
+// Mouse glyph for a key tile (left / right / middle button filled).
+// Paths from the Coqui canvas mouse glyph (viewBox 0 0 12 16, shown at 12x16).
+function mouseSVG(which) {
+  const btn = which === 'right' ? '<path d="M6 0.75A5.25 5.25 0 0 1 11.25 6V6.5H6Z"/>'
+    : which === 'middle' ? '<rect x="5" y="2.6" width="2" height="3.2" rx="1"/>'
+      : '<path d="M6 0.75A5.25 5.25 0 0 0 0.75 6V6.5H6Z"/>';
+  const split = which === 'middle' ? 'M0.75 6.5H11.25' : 'M6 0.75V6.5M0.75 6.5H11.25';
+  return '<svg class="ir-fight-mouse" viewBox="0 0 12 16" width="12" height="16" aria-hidden="true" fill="currentColor">' +
+    '<rect x="0.75" y="0.75" width="10.5" height="14.5" rx="5.25" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
+    `<path d="${split}" fill="none" stroke="currentColor" stroke-width="1.5"/>` + btn + '</svg>';
+}
+// Team crest for the winner band: ./logos.js is imported lazily (pure SVG strings, no requests).
+let logosMod = null;
+function crestFor(team, cb) {
+  if (!(team >= 0) || logosMod === false) return;
+  const use = (m) => { try { cb(m.svgToDataURI(m.teamLogoSVG(team, { size: 176, variant: 'full' }))); } catch { /* no crest */ } };
+  if (logosMod) use(logosMod);
+  else import('./logos.js').then((m) => { logosMod = m; use(m); }, () => { logosMod = false; });
+}
+// Burst glyph (callout kit "Big hit" icon).
+const BURST_SVG = '<svg class="ir-fight-burst" viewBox="0 0 35.2 35.2" aria-hidden="true"><path d="M17.6 0 L17.6 8.8 M17.6 26.4 L17.6 35.2 M0 17.6 L8.8 17.6 M26.4 17.6 L35.2 17.6 M5.5 5.5 L11 11 M24.2 24.2 L29.7 29.7 M29.7 5.5 L24.2 11 M11 24.2 L5.5 29.7" fill="none" stroke="currentColor" stroke-width="4.4" stroke-linecap="round"/></svg>';
+// Counter-ready glyph: a curved return arrow.
+const COUNTER_SVG = '<svg class="ir-fight-cglyph" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 9.5a5 5 0 1 0 1.6-5.2M3 2v3.6h3.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const INK = [10, 14, 28];
 const SKINS = ['#f2c9a8', '#e3ae86', '#c98b62', '#a06a45', '#74482f', '#f6d6bf', '#b77b55'];
 const HAIRS = ['#22160e', '#5b3a1e', '#a26f2c', '#dcb66e', '#151515', '#8a2f17', '#6b6b6b'];
@@ -87,12 +180,185 @@ function ik(a, t, l1, l2, bend) {
 // ------------------------------------------------------------------ style injection
 let styleUsers = 0;
 const STYLE_ID = 'ir-fight-style';
+const EASE = 'cubic-bezier(.2,.8,.2,1)';
 const STYLE = `
 .ir-fight-root{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;z-index:40;overflow:hidden;
-  opacity:0;visibility:hidden;transition:opacity .22s ease,visibility 0s linear .22s;contain:strict}
+  opacity:0;visibility:hidden;transition:opacity 120ms ease-out,visibility 0s linear 120ms;contain:strict;
+  --ir-fb-top:124px;--ir-fb-bot:62px;
+  font-family:var(--f-ui,Bahnschrift,"DIN Alternate","Segoe UI",sans-serif);color:var(--ink,#E8EDF5);
+  font-size:13px;line-height:18px;user-select:none;-webkit-user-select:none}
 .ir-fight-root.ir-fight-fixed{position:fixed}
-.ir-fight-root.ir-fight-on{opacity:1;visibility:visible;transition:opacity .16s ease}
+.ir-fight-root.ir-fight-on{opacity:1;visibility:visible;transition:opacity 180ms ease-out}
+.ir-fight-root *{box-sizing:border-box}
 .ir-fight-canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block;pointer-events:none}
+.ir-fight-hud{position:absolute;inset:0}
+
+/* ---- top band: name plates, hp bars, stamina + dodge, clock ---- */
+.ir-fight-band{position:absolute;left:0;right:0;top:0;height:var(--ir-fb-top);background:var(--ground,#0A0F1C);
+  display:flex;align-items:center;gap:24px;padding:0 max(32px,env(safe-area-inset-right,0px)) 0 max(32px,env(safe-area-inset-left,0px))}
+.ir-fight-band>*{transition:opacity 120ms ease-out}
+.ir-fight-done .ir-fight-band>*{opacity:0}
+.ir-fight-side{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.ir-fight-b{align-items:flex-end}
+.ir-fight-plate,.ir-fight-meta{display:flex;align-items:center;gap:10px;max-width:100%;min-width:0;white-space:nowrap}
+.ir-fight-b .ir-fight-plate,.ir-fight-b .ir-fight-meta{flex-direction:row-reverse}
+.ir-fight-num{flex:none;width:30px;height:30px;border-radius:15px;display:flex;align-items:center;justify-content:center;
+  font-size:12px;line-height:14px;font-weight:700;border:1px solid currentColor}
+.ir-fight-num span{color:var(--ink,#E8EDF5)}
+.ir-fight-name{font-size:20px;line-height:24px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ir-fight-ctrl{flex:none;font-size:13px;line-height:16px;color:var(--ink-2,#A1ACC0)}
+.ir-fight-hp{flex:none;font-size:15px;line-height:18px;font-weight:700;font-variant-numeric:tabular-nums}
+.ir-fight-hp.ir-fight-low{color:var(--goal,#FF4B3E)}
+.ir-fight-bar{position:relative;width:min(560px,100%);height:14px;border-radius:4px;overflow:hidden;background:var(--surface-3,#1E2940)}
+.ir-fight-trail,.ir-fight-fill{position:absolute;top:0;bottom:0;left:0;width:0}
+.ir-fight-trail{background:#ABB2BF}
+.ir-fight-fill{border-radius:4px;background:var(--ir-team)}
+.ir-fight-b .ir-fight-trail,.ir-fight-b .ir-fight-fill{left:auto;right:0}
+.ir-fight-pips{flex:none;display:flex;gap:3px}
+.ir-fight-b .ir-fight-pips{flex-direction:row-reverse}
+.ir-fight-pip{width:18px;height:6px;border-radius:2px;--f:0;
+  background:linear-gradient(90deg,var(--ir-pip,var(--turbo,#7CC4FF)) calc(var(--f)*100%),var(--surface-3,#1E2940) 0)}
+.ir-fight-b .ir-fight-pip{background:linear-gradient(270deg,var(--ir-pip,var(--turbo,#7CC4FF)) calc(var(--f)*100%),var(--surface-3,#1E2940) 0)}
+.ir-fight-tired .ir-fight-pip{--ir-pip:var(--warn,#F2C14E)}
+.ir-fight-lbl{flex:none;font-size:11px;line-height:13px;color:var(--ink-2,#A1ACC0)}
+.ir-fight-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--good,#3FD98A)}
+.ir-fight-cool .ir-fight-dot{background:conic-gradient(var(--ink-3,#6A7590) calc(var(--cd,0)*1turn),var(--surface-3,#1E2940) 0)}
+.ir-fight-clock{flex:none;width:96px;height:88px;border-radius:var(--r-lg,16px);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:2px;background:var(--surface-2,#172034);border:1px solid var(--hairline-strong,#34425F)}
+.ir-fight-clock-n{font-size:44px;line-height:44px;font-weight:700;font-style:italic;font-variant-numeric:tabular-nums}
+.ir-fight-clock.ir-fight-urgent .ir-fight-clock-n{color:var(--goal,#FF4B3E)}
+.ir-fight-clock-l{font-size:11px;line-height:13px;color:var(--ink-2,#A1ACC0)}
+
+/* ---- chips under the band: combo + counter ready ---- */
+.ir-fight-chips{position:absolute;top:calc(var(--ir-fb-top) - 2px);display:flex;flex-direction:column;gap:8px}
+.ir-fight-chips-a{left:max(32px,env(safe-area-inset-left,0px));align-items:flex-start}
+.ir-fight-chips-b{right:max(32px,env(safe-area-inset-right,0px));align-items:flex-end}
+.ir-fight-chip{display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--ground,#0A0F1C);
+  border:1px solid var(--hairline-strong,#34425F);border-radius:var(--r-md,10px);white-space:nowrap;
+  opacity:0;transform:translateY(-6px);transition:opacity 120ms ease-out,transform 120ms ease-out}
+.ir-fight-chip.ir-fight-show{opacity:1;transform:none;transition:opacity 180ms ease-out,transform 180ms ${EASE}}
+.ir-fight-combo{width:318px;max-width:calc(50vw - 48px);height:50px;font-size:22px;line-height:26px;font-weight:700;font-style:italic}
+.ir-fight-chips-a .ir-fight-combo{justify-content:flex-start}
+.ir-fight-chips-b .ir-fight-combo{justify-content:flex-end}
+.ir-fight-counter{height:36px;font-size:13px;line-height:16px;font-weight:600}
+.ir-fight-cglyph{width:16px;height:16px;flex:none;color:var(--turbo,#7CC4FF)}
+
+/* ---- big titles: callout plates (callout kit) ---- */
+.ir-fight-callout{position:absolute;left:50%;top:34%;max-width:calc(100vw - 32px);display:flex;flex-direction:column;align-items:center;
+  gap:10px;padding:18px 28px 20px;background:rgba(10,15,28,.94);border:1px solid var(--ir-edge,var(--hairline-strong,#34425F));
+  border-radius:var(--r-lg,16px);white-space:nowrap;opacity:0;transform:translate(-50%,-50%);transition:opacity 120ms ease-out}
+.ir-fight-callout.ir-fight-show{opacity:1;transition:none;animation:ir-fight-open 200ms ease-out both}
+.ir-fight-callout-row{display:flex;align-items:center;gap:14px}
+.ir-fight-callout-t{font-size:84px;line-height:84px;font-weight:700;font-style:italic;letter-spacing:-0.04em}
+.ir-fight-callout.ir-fight-mid .ir-fight-callout-t{font-size:52px;line-height:52px;letter-spacing:-0.03em}
+.ir-fight-callout-s{display:flex;align-items:center;gap:10px;font-size:16px;line-height:19px;font-weight:700}
+.ir-fight-callout-s:empty{display:none}
+.ir-fight-vs{font-weight:400;color:var(--ink-3,#6A7590)}
+.ir-fight-burst{width:35px;height:35px;flex:none;color:var(--goal,#FF4B3E);display:none}
+.ir-fight-callout.ir-fight-icon .ir-fight-burst{display:block}
+@keyframes ir-fight-open{from{opacity:0;transform:translate(-50%,-50%) scale(.96)}to{opacity:1;transform:translate(-50%,-50%)}}
+
+/* ---- pop-ups over the fighters (small callouts) ---- */
+.ir-fight-pops{position:absolute;inset:0;overflow:hidden}
+.ir-fight-pop{position:absolute;left:0;top:0;height:52px;display:flex;align-items:center;gap:10px;padding:0 20px;white-space:nowrap;
+  background:rgba(10,15,28,.94);border:1px solid var(--hairline-strong,#34425F);border-radius:var(--r-md,10px);will-change:transform,opacity}
+.ir-fight-pop-t{font-size:26px;line-height:31px;font-weight:700;font-style:italic}
+.ir-fight-pop-n{font-size:15px;line-height:18px}
+
+/* ---- winner banner: an opaque team band over the top band ---- */
+.ir-fight-banner{position:absolute;left:0;right:0;top:0;height:var(--ir-fb-top);display:flex;align-items:center;justify-content:center;gap:24px;
+  padding:0 32px;background:var(--ir-team);color:var(--ir-on,var(--on-ice,#0A0F1C));transform:translateY(-100%);visibility:hidden;
+  transition:transform 120ms ease-out,visibility 0s linear 120ms}
+.ir-fight-banner.ir-fight-show{transform:none;visibility:visible;transition:transform 300ms ${EASE}}
+.ir-fight-crest{width:88px;height:88px;flex:none;display:block}
+.ir-fight-crest:not([src]),.ir-fight-crest[src=""]{display:none}
+.ir-fight-banner-txt{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ir-fight-banner-t{font-size:56px;line-height:56px;font-weight:700;font-style:italic;letter-spacing:-0.03em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:.12em}
+.ir-fight-banner-s{font-size:15px;line-height:18px;font-weight:600}
+.ir-fight-banner-s:empty{display:none}
+
+/* ---- bottom band: key tiles ---- */
+.ir-fight-hint{position:absolute;left:0;right:0;bottom:0;height:var(--ir-fb-bot);background:var(--ground,#0A0F1C);
+  display:flex;align-items:center;justify-content:center;gap:28px;padding:0 16px env(safe-area-inset-bottom,0px);white-space:nowrap}
+.ir-fight-hint:empty{display:none}
+.ir-fight-hint>*{transition:opacity 120ms ease-out}
+.ir-fight-ko .ir-fight-hint>*{opacity:0}
+.ir-fight-key{display:flex;align-items:center;gap:8px}
+.ir-fight-tile{flex:none;min-width:26px;height:26px;padding:0 7px;border-radius:var(--r-sm,6px);display:flex;align-items:center;justify-content:center;
+  background:var(--ice,#DCEAF6);color:var(--on-ice,#0A0F1C);font-size:12px;line-height:14px;font-weight:700}
+.ir-fight-tile.ir-fight-one{padding:0}
+.ir-fight-tile .ir-fight-mouse{display:block}
+.ir-fight-act{font-size:14px;line-height:17px}
+
+/* ---- smaller screens ---- */
+@media (max-height:640px),(max-width:1100px){
+  .ir-fight-root{--ir-fb-top:96px;--ir-fb-bot:50px}
+  .ir-fight-band{gap:16px;padding:0 max(20px,env(safe-area-inset-right,0px)) 0 max(20px,env(safe-area-inset-left,0px))}
+  .ir-fight-side{gap:6px}
+  .ir-fight-plate{gap:8px}
+  .ir-fight-num{width:26px;height:26px;border-radius:13px}
+  .ir-fight-name{font-size:17px;line-height:20px}
+  .ir-fight-bar{height:11px}
+  .ir-fight-pip{width:14px;height:5px}
+  .ir-fight-clock{width:80px;height:72px;border-radius:var(--r-md,10px)}
+  .ir-fight-clock-n{font-size:36px;line-height:36px}
+  .ir-fight-chips-a{left:max(20px,env(safe-area-inset-left,0px))}
+  .ir-fight-chips-b{right:max(20px,env(safe-area-inset-right,0px))}
+  .ir-fight-combo{width:auto;height:42px;font-size:18px;line-height:22px}
+  .ir-fight-callout{padding:14px 22px 16px}
+  .ir-fight-callout-t{font-size:64px;line-height:64px}
+  .ir-fight-callout.ir-fight-mid .ir-fight-callout-t{font-size:40px;line-height:40px}
+  .ir-fight-pop{height:42px;padding:0 14px;gap:8px}
+  .ir-fight-pop-t{font-size:20px;line-height:24px}
+  .ir-fight-pop-n{font-size:13px;line-height:16px}
+  .ir-fight-crest{width:64px;height:64px}
+  .ir-fight-banner-t{font-size:40px;line-height:42px}
+  .ir-fight-hint{gap:20px}
+  .ir-fight-tile{min-width:22px;height:22px;padding:0 6px}
+  .ir-fight-act{font-size:13px;line-height:16px}
+}
+@media (max-height:440px),(max-width:720px){
+  .ir-fight-root{--ir-fb-top:72px;--ir-fb-bot:40px}
+  .ir-fight-band{gap:10px;padding:0 max(12px,env(safe-area-inset-right,0px)) 0 max(12px,env(safe-area-inset-left,0px))}
+  .ir-fight-side{gap:5px}
+  .ir-fight-num{width:22px;height:22px;border-radius:11px;font-size:11px}
+  .ir-fight-name{font-size:14px;line-height:17px}
+  .ir-fight-ctrl,.ir-fight-hp{font-size:12px;line-height:14px}
+  .ir-fight-bar{height:8px;border-radius:3px}
+  .ir-fight-fill{border-radius:3px}
+  .ir-fight-pip{width:10px;height:4px}
+  .ir-fight-pips{gap:2px}
+  .ir-fight-clock{width:60px;height:56px}
+  .ir-fight-clock-n{font-size:28px;line-height:28px}
+  .ir-fight-chips-a{left:max(12px,env(safe-area-inset-left,0px))}
+  .ir-fight-chips-b{right:max(12px,env(safe-area-inset-right,0px))}
+  .ir-fight-combo{height:34px;padding:0 10px;font-size:15px;line-height:18px}
+  .ir-fight-counter{height:30px;padding:0 10px;font-size:12px}
+  .ir-fight-callout{padding:10px 16px 12px;gap:6px}
+  .ir-fight-callout-t{font-size:44px;line-height:44px}
+  .ir-fight-callout.ir-fight-mid .ir-fight-callout-t{font-size:30px;line-height:30px}
+  .ir-fight-callout-s{font-size:13px;line-height:16px}
+  .ir-fight-burst{width:26px;height:26px}
+  .ir-fight-pop{height:34px;padding:0 10px;gap:6px}
+  .ir-fight-pop-t{font-size:17px;line-height:20px}
+  .ir-fight-pop-n{font-size:12px;line-height:14px}
+  .ir-fight-banner{gap:12px;padding:0 16px}
+  .ir-fight-crest{width:48px;height:48px}
+  .ir-fight-banner-t{font-size:28px;line-height:30px}
+  .ir-fight-banner-s{font-size:12px;line-height:14px}
+  .ir-fight-hint{gap:14px}
+  .ir-fight-act{font-size:12px;line-height:14px}
+}
+@media (max-width:560px){
+  .ir-fight-ctrl,.ir-fight-meta .ir-fight-lbl{display:none}
+  .ir-fight-pip{width:8px}
+}
+@media (prefers-reduced-motion:reduce){
+  .ir-fight-root,.ir-fight-root.ir-fight-on,.ir-fight-chip,.ir-fight-chip.ir-fight-show,.ir-fight-callout,
+  .ir-fight-banner,.ir-fight-banner.ir-fight-show,.ir-fight-band>*,.ir-fight-hint>*{transition:none}
+  .ir-fight-callout.ir-fight-show{animation:none;opacity:1}
+  .ir-fight-chip{transform:none}
+}
 `;
 
 // ------------------------------------------------------------------ poses
@@ -156,12 +422,71 @@ export function createFightView(container) {
   const canvas = doc.createElement('canvas');
   canvas.className = 'ir-fight-canvas';
   root.appendChild(canvas);
+
+  // ---- DOM HUD (built once, filled per fight) ----
+  const el = (cls, parent, tag = 'div', text = '') => {
+    const e = doc.createElement(tag);
+    if (cls) e.className = cls;
+    if (text) e.textContent = text;
+    if (parent) parent.appendChild(e);
+    return e;
+  };
+  const hud = el('ir-fight-hud', root);
+  const band = el('ir-fight-band', hud);
+  const mkSide = (k) => {
+    const side = el(`ir-fight-side ir-fight-${k}`, null);
+    const plate = el('ir-fight-plate', side);
+    const num = el('ir-fight-num', plate);
+    const numTxt = el('', num, 'span');
+    const name = el('ir-fight-name', plate);
+    const ctrl = el('ir-fight-ctrl', plate);
+    const hp = el('ir-fight-hp', plate);
+    const bar = el('ir-fight-bar', side);
+    const trail = el('ir-fight-trail', bar);
+    const fill = el('ir-fight-fill', bar);
+    const meta = el('ir-fight-meta', side);
+    const pipsEl = el('ir-fight-pips', meta);
+    const pips = [];
+    for (let k2 = 0; k2 < 10; k2++) pips.push(el('ir-fight-pip', pipsEl));
+    const stam = el('ir-fight-lbl', meta, 'div', FIGHT_COPY.stamina);
+    el('ir-fight-dot', meta);
+    const dodge = el('ir-fight-lbl', meta, 'div', FIGHT_COPY.dodgeReady);
+    return { side, num, numTxt, name, ctrl, hp, trail, fill, meta, pips, stam, dodge, last: {} };
+  };
+  const sideA = mkSide('a'), sideB = mkSide('b');
+  const clock = el('ir-fight-clock', null);
+  const clockN = el('ir-fight-clock-n', clock);
+  el('ir-fight-clock-l', clock, 'div', FIGHT_COPY.clock);
+  band.append(sideA.side, clock, sideB.side);
+  const mkChips = (k) => {
+    const box = el(`ir-fight-chips ir-fight-chips-${k}`, hud);
+    const combo = el('ir-fight-chip ir-fight-combo', box);
+    const counter = el('ir-fight-chip ir-fight-counter', box);
+    counter.innerHTML = COUNTER_SVG;
+    counter.appendChild(doc.createTextNode(FIGHT_COPY.counterReady));
+    return { combo, counter, last: {} };
+  };
+  const chips = [mkChips('a'), mkChips('b')];
+  const pops = el('ir-fight-pops', hud);
+  const call = el('ir-fight-callout', hud);
+  const callRow = el('ir-fight-callout-row', call);
+  callRow.innerHTML = BURST_SVG;
+  const callT = el('ir-fight-callout-t', callRow);
+  const callS = el('ir-fight-callout-s', call);
+  const banner = el('ir-fight-banner', hud);
+  const crest = el('ir-fight-crest', banner, 'img');
+  crest.alt = '';
+  const bannerTxt = el('ir-fight-banner-txt', banner);
+  const bannerT = el('ir-fight-banner-t', bannerTxt);
+  const bannerS = el('ir-fight-banner-s', bannerTxt);
+  const hintEl = el('ir-fight-hint', hud);
   container.appendChild(root);
   let ctx = canvas.getContext('2d');      // swapped to an offscreen context while caching the backdrop
   const main = ctx;
 
   let S = null;
   let disposed = false;
+  const reducedMotion = () => { try { return !!(win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch { return false; } };
 
   function fresh(snap, opts) {
     const o = opts || {};
@@ -173,15 +498,20 @@ export function createFightView(container) {
       off: 0, ghosts: [], headW: [0, -0.85], hpShow: FIGHT.HP, hpTrail: FIGHT.HP, trailWait: 0,
       gloves: true, helmet: true, phase: i * 2.1 + 0.7, comboShow: 0, comboN: 0,
     });
+    const str = (v, d) => (v === undefined || v === null || v === '' ? d : String(v));
+    const teamIdx = (v) => (Number.isInteger(v) && v >= 0 ? v : -1);
     return {
       on: true, snap, opts: o, cols, ids,
-      names: [String(o.nameA ?? 'HOME').toUpperCase(), String(o.nameB ?? 'AWAY').toUpperCase()],
+      names: [str(o.nameA, 'Home'), str(o.nameB, 'Away')],
       nums: [o.numA ?? '', o.numB ?? ''],
+      ctrls: [str(o.ctrlA, ''), str(o.ctrlB, '')],
+      teams: [teamIdx(o.teamA), teamIdx(o.teamB)],
       looks: [o.lookA || lookFor(ids[0], tms[0]), o.lookB || lookFor(ids[1], tms[1])],
-      hint: o.hint === false ? '' : (o.hint || 'SHOOT jab  ·  ACTION haymaker  ·  PASS block  ·  TURBO dodge'),
-      reward: o.reward === false ? '' : (o.reward || 'FULL TURBO  +  ON FIRE'),
+      hint: o.hint === false ? [] : parseHint(typeof o.hint === 'string' && o.hint.trim() ? o.hint : DEFAULT_HINT),
+      reward: o.reward === false ? '' : str(o.reward, FIGHT_COPY.reward),
+      shakeK: o.shake === false ? 0 : Number.isFinite(o.shake) ? clamp(+o.shake, 0, 1) : 1, flashOn: o.flashes !== false,
       W: 0, H: 0, dpr: 1, u: 1, gy: 0,
-      real: 0, anim: 0, shown: 0, alphaMul: 1, quiet: false, slowT: 0, shake: 0, flash: 0, flashCol: [255, 255, 255], hype: 0,
+      real: 0, anim: 0, quiet: false, slowT: 0, shake: 0, flash: 0, flashCol: [255, 255, 255], hype: 0,
       cam: { x: 0, y: -0.5, z: 1.25, p: 0 }, introT: 0, lastPh: '', brawlT: -1, ko: null,
       F: [mk(0), mk(1)], props: [], parts: [], pops: [], bulbs: [], crowd: [], scratches: [],
       sticks: [{ x: -0.62, r: 0.06 }, { x: 0.7, r: -0.1 }],
@@ -198,6 +528,7 @@ export function createFightView(container) {
     canvas.height = Math.max(1, Math.round(h * dpr));
     S.gy = h * 0.865;
     S.u = Math.min(h * 0.6, w * 0.46);   // world unit (one fighter height) in CSS px
+    S.bandH = band.offsetHeight || 0;     // pop-ups stay below the top band
     buildBackdrop();
   }
 
@@ -251,13 +582,15 @@ export function createFightView(container) {
   const toWorld = (i, p) => [p[0] * sgn(i), p[1]];
   const toLocal = (i, p) => [p[0] * sgn(i), p[1]];
 
+  // Pop-ups are small callout plates (DOM) anchored above a fighter's head in world space.
   function pop(text, i, o = {}) {
-    if (S.quiet) return;
+    if (S.quiet || !text) return;
     const F = S.F[i];
     S.pops.push({
-      text, x: o.x ?? F.headW[0] + (o.dx || 0), y: o.y ?? F.headW[1] - 0.2, t: 0, life: o.life || 0.85,
-      size: o.size || 0.055, c1: o.c1 || [255, 255, 255], c2: o.c2 || [255, 210, 63], rise: o.rise ?? 0.16,
+      text, i, anon: !!o.anon, x: o.x ?? F.headW[0] + (o.dx || 0), y: o.y ?? F.headW[1] - 0.2, t: 0, life: o.life || 0.85,
+      rise: o.rise ?? 0.16, node: null,
     });
+    while (S.pops.length > 6) { const old = S.pops.shift(); if (old.node) old.node.remove(); }
   }
   function burst(x, y, power, col) {
     S.parts.push({ k: 'star', x, y, t: 0, life: 0.16 + power * 0.12, s: 0.08 + power * 0.14, rot: Math.random() * 6.28, col });
@@ -318,9 +651,8 @@ export function createFightView(container) {
         S.hype = Math.min(1, S.hype + 0.15 + pw * 0.4);
         S.cam.z += e.kind === 'hay' ? 0.06 : 0.015;
         F.trailWait = 0.35;
-        if (e.int) pop('INTERRUPTED!', d, { c2: [255, 120, 80], size: 0.05 });
-        else if (e.ctr) pop('COUNTER!', by, { c2: [120, 230, 255], size: 0.06 });
-        else if (e.kind === 'hay') pop('HAYMAKER!', by, { c2: [255, 170, 40], size: 0.065 });
+        const pp = popFor(e, by);
+        if (pp) pop(pp.text, pp.side);
         if ((e.combo | 0) >= 2) { S.F[by].comboN = e.combo | 0; S.F[by].comboShow = 1.4; }
         break;
       }
@@ -333,8 +665,8 @@ export function createFightView(container) {
         for (let k = 0; k < 6; k++) S.parts.push({ k: 'spark', x: fw[0], y: fw[1], vx: sgn(by) * (0.4 + Math.random()) * -1, vy: (Math.random() - 0.6) * 1.4, t: 0, life: 0.25, s: 0.01 });
         S.shake = Math.max(S.shake, e.brk ? 16 : 5);
         S.F[1 - by].off = 0.6;
-        if (e.brk) { pop('GUARD BREAK!', by, { c2: [255, 90, 90], size: 0.06 }); S.flash = 0.25; S.flashCol = [255, 80, 80]; }
-        else pop('BLOCKED', by, { c2: [140, 220, 255], size: 0.04, life: 0.6 });
+        pop(popFor(e, by).text, by, { life: e.brk ? 0.85 : 0.6 });
+        if (e.brk) { S.flash = 0.25; S.flashCol = [255, 80, 80]; }
         break;
       }
       case 'dodge': {
@@ -343,11 +675,11 @@ export function createFightView(container) {
         F.ghostT = 0.4;
         S.F[1 - by].off = 1;
         spray(toWorld(by, [BASE_X - 0.1, 0])[0], 10, -sgn(by));
-        pop('WHIFF!', 1 - by, { c2: [190, 255, 160], size: 0.05 });
+        pop(FIGHT_COPY.whiff, 1 - by);
         break;
       }
       case 'grab': {
-        if (e.clash) { pop('TIE-UP!', by < 0 ? 0 : by, { x: 0, y: -1.12, c2: [255, 230, 120], size: 0.05 }); S.shake = Math.max(S.shake, 8); }
+        if (e.clash) { pop(FIGHT_COPY.tieUp, by < 0 ? 0 : by, { x: 0, y: -1.12, anon: true }); S.shake = Math.max(S.shake, 8); }
         break;
       }
       case 'ko': startKO(e.how, by >= 0 ? S.ids[by] : S.snap.winner, pw); break;
@@ -518,7 +850,6 @@ export function createFightView(container) {
   function step(dt) {
     const snap = S.snap;
     S.real += dt;
-    S.shown = Math.min(1, S.shown + dt * 4);
     let ts = 1;
     if (S.slowT > 0) { S.slowT -= dt; ts = S.slowT > 0.15 ? 0.2 : lerp(1, 0.2, clamp(S.slowT / 0.15, 0, 1)); }
     const adt = dt * ts;
@@ -610,7 +941,9 @@ export function createFightView(container) {
     }
     S.parts = S.parts.filter((p) => p.t < p.life);
     for (const p of S.pops) p.t += dt;
-    S.pops = S.pops.filter((p) => p.t < p.life);
+    if (S.pops.some((p) => p.t >= p.life)) {
+      S.pops = S.pops.filter((p) => { if (p.t < p.life) return true; if (p.node) p.node.remove(); return false; });
+    }
     // camera bulbs in the crowd
     const rate = 2 + S.hype * 26;
     if (Math.random() < rate * dt && S.crowd.length) {
@@ -1062,201 +1395,20 @@ export function createFightView(container) {
     drawParticles();
   }
 
-  // ---------------------------------------------------------------- drawing: overlay (screen px)
-  function title(txt, x, y, size, o = {}) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.transform(1, 0, o.skew ?? -0.2, 1, 0, 0);
-    ctx.font = `italic 900 ${Math.round(size)}px ${FONT}`;
-    if ('letterSpacing' in ctx) ctx.letterSpacing = `${Math.round(size * (o.ls || 0))}px`;
-    let sc = o.scale ?? 1;
-    if (o.maxW) { const w = ctx.measureText(txt).width; if (w * sc > o.maxW) sc = o.maxW / w; }
-    ctx.scale(sc, sc);
-    ctx.rotate(o.rot || 0);
-    ctx.globalAlpha = clamp((o.alpha ?? 1) * S.alphaMul, 0, 1);
-    ctx.textAlign = o.align || 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
-    ctx.fillStyle = o.shadow || 'rgba(0,0,0,0.6)';
-    ctx.fillText(txt, size * 0.05, size * 0.08);
-    if (o.sw !== 0) { ctx.lineWidth = size * (o.sw ?? 0.17); ctx.strokeStyle = o.stroke || css(INK); ctx.strokeText(txt, 0, 0); }
-    const g = ctx.createLinearGradient(0, -size * 0.45, 0, size * 0.45);
-    g.addColorStop(0, o.top || '#ffffff'); g.addColorStop(0.55, o.mid || o.top || '#ffffff'); g.addColorStop(1, o.bot || '#ffd23f');
-    ctx.fillStyle = g; ctx.fillText(txt, 0, 0);
-    ctx.restore();
-  }
-  function para(x, y, w, h, sk) {
-    ctx.beginPath(); ctx.moveTo(x + sk, y); ctx.lineTo(x + w + sk, y); ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h); ctx.closePath();
-  }
-
-  function drawHUD() {
-    const { W, H } = S, snap = S.snap;
-    const hs = clamp(Math.max(Math.min(W / 1150, H / 640), Math.min(W / 760, 1)), 0.5, 1.7);
-    const labels = hs >= 0.68;   // tiny screens: drop the STAMINA / DODGE captions, keep the meters
-    const top = Math.max(8, H * 0.03);
-    const gap = 46 * hs;
-    const bw = Math.min(W / 2 - gap - 12 * hs, 430 * hs), bh = 20 * hs, sk = 10 * hs;
-    const nameY = top + 12 * hs, barY = top + 26 * hs, stY = barY + bh + 7 * hs;
-    for (let i = 0; i < 2; i++) {
-      const F = S.F[i], cols = S.cols[i];
-      const x0 = i === 0 ? W / 2 - gap - bw : W / 2 + gap;
-      // name plate
-      ctx.save();
-      ctx.font = `italic 900 ${Math.round(Math.max(9.5, 15 * hs))}px ${FONT}`; ctx.textBaseline = 'middle';
-      ctx.textAlign = i === 0 ? 'left' : 'right';
-      const nx = i === 0 ? x0 + 4 * hs : x0 + bw - 4 * hs;
-      const label = S.names[i] + (S.nums[i] !== '' ? `  #${S.nums[i]}` : '');
-      ctx.lineWidth = 4 * hs; ctx.strokeStyle = css(INK); ctx.strokeText(label, nx, nameY);
-      ctx.fillStyle = '#fff'; ctx.fillText(label, nx, nameY);
-      ctx.restore();
-      // hp bar
-      ctx.save();
-      para(x0 - 3 * hs, barY - 3 * hs, bw + 6 * hs, bh + 6 * hs, i === 0 ? sk : -sk);
-      ctx.fillStyle = 'rgba(5,8,18,0.85)'; ctx.fill();
-      ctx.lineWidth = 2 * hs; ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.stroke();
-      para(x0, barY, bw, bh, i === 0 ? sk : -sk); ctx.clip();
-      // hp is anchored at the inner (clock) side and drains toward the outer edge
-      const fill = (v, col) => {
-        const w = clamp(v / FIGHT.HP, 0, 1) * bw;
-        if (w <= 0.5) return;
-        para(i === 0 ? x0 + bw - w : x0, barY, w, bh, i === 0 ? sk : -sk);
-        ctx.fillStyle = col; ctx.fill();
-      };
-      fill(F.hpTrail, 'rgba(255,255,255,0.9)');
-      const low = F.hpShow < FIGHT.HP * 0.3;
-      const pulse = low ? 0.5 + 0.5 * Math.sin(S.real * 12) : 0;
-      const g = ctx.createLinearGradient(0, barY, 0, barY + bh);
-      const base = low ? mixc(cols.p, [255, 50, 50], 0.5 + pulse * 0.3) : cols.p;
-      g.addColorStop(0, css(shade(base, 1.45))); g.addColorStop(0.5, css(base)); g.addColorStop(1, css(shade(base, 0.7)));
-      fill(F.hpShow, g);
-      ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fillRect(x0 - sk, barY + 2 * hs, bw + sk * 2, bh * 0.22);
-      ctx.restore();
-      // stamina pills (fill from the inner side, like the hp bar)
-      const en = clamp(+(i === 0 ? snap.enA : snap.enB) || 0, 0, 1);
-      const segs = 10, sw = (bw * 0.72) / segs, shh = 7 * hs;
-      for (let k = 0; k < segs; k++) {
-        const idx = i === 0 ? segs - 1 - k : k;
-        const amt = clamp(en * segs - idx, 0, 1);
-        const xx = i === 0 ? x0 + bw * 0.28 + k * sw : x0 + k * sw;
-        para(xx + 1.5 * hs, stY, sw - 3 * hs, shh, i === 0 ? 3 * hs : -3 * hs);
-        ctx.fillStyle = 'rgba(5,8,18,0.8)'; ctx.fill();
-        if (amt > 0) {
-          ctx.save(); ctx.globalAlpha = (0.35 + 0.65 * amt) * S.alphaMul;
-          para(xx + 1.5 * hs, stY, sw - 3 * hs, shh, i === 0 ? 3 * hs : -3 * hs);
-          ctx.fillStyle = en < 0.25 ? '#ff9b3d' : '#7fe3ff'; ctx.fill(); ctx.restore();
-        }
-      }
-      ctx.save();
-      ctx.font = `italic 900 ${Math.round(8.5 * hs)}px ${FONT}`; ctx.textBaseline = 'middle';
-      ctx.fillStyle = 'rgba(220,235,255,0.75)';
-      ctx.textAlign = i === 0 ? 'right' : 'left';
-      if (labels) ctx.fillText('STAMINA', i === 0 ? x0 + bw * 0.27 : x0 + bw * 0.73, stY + shh / 2);
-      // dodge pip
-      const cd = clamp(+(i === 0 ? snap.cdA : snap.cdB) || 0, 0, 1);
-      const px = i === 0 ? x0 + 10 * hs : x0 + bw - 10 * hs, py = stY + shh / 2, pr = 6 * hs;
-      ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI * 2); ctx.fillStyle = 'rgba(5,8,18,0.85)'; ctx.fill();
-      ctx.beginPath(); ctx.moveTo(px, py); ctx.arc(px, py, pr * 0.8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - cd)); ctx.closePath();
-      ctx.fillStyle = cd <= 0 ? '#b6ff7a' : 'rgba(182,255,122,0.4)'; ctx.fill();
-      ctx.font = `italic 900 ${Math.round(8 * hs)}px ${FONT}`; ctx.fillStyle = 'rgba(220,235,255,0.75)';
-      ctx.textAlign = i === 0 ? 'left' : 'right';
-      if (labels) ctx.fillText('DODGE', i === 0 ? px + pr + 4 * hs : px - pr - 4 * hs, py);
-      ctx.restore();
-      // counter-ready glint + combo
-      const cr = (i === 0 ? snap.crA : snap.crB) | 0;
-      if (cr && snap.ph === 'fight') {
-        title('COUNTER READY', i === 0 ? x0 + bw * 0.5 : x0 + bw * 0.5, stY + shh + 13 * hs, 12 * hs, { alpha: 0.6 + 0.4 * Math.sin(S.real * 20), top: '#dff8ff', bot: '#62d6ff', sw: 0.2 });
-      }
-      if (F.comboShow > 0 && F.comboN >= 2) {
-        const a = clamp(F.comboShow / 0.4, 0, 1);
-        const pop = 1 + Math.max(0, F.comboShow - 1.2) * 2;
-        title(`${F.comboN} HIT COMBO`, i === 0 ? x0 + 6 * hs : x0 + bw - 6 * hs, stY + shh + 34 * hs, 20 * hs, { alpha: a, scale: pop, align: i === 0 ? 'left' : 'right', top: '#fff6c8', bot: '#ff9d2e', maxW: bw * 0.6 });
-      }
-    }
-    // clock badge
-    const cx = W / 2, cy = top + 30 * hs, r = 30 * hs;
-    ctx.save();
-    ctx.beginPath();
-    for (let k = 0; k < 6; k++) { const a = Math.PI / 6 + (k * Math.PI) / 3; ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r); }
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(5,8,18,0.92)'; ctx.fill();
-    ctx.lineWidth = 2.5 * hs; ctx.strokeStyle = '#fff'; ctx.stroke();
-    ctx.restore();
-    let clockTxt = '';
-    let urgent = false;
-    if (snap.ph === 'intro') clockTxt = String(FIGHT.DURATION);
-    else if (snap.ph === 'fight') { const t = Math.ceil(snap.t - 1e-6); clockTxt = String(Math.max(0, t)); urgent = snap.t <= 3; }
-    else clockTxt = snap.how === 'ko' ? 'KO' : '0';
-    title(clockTxt, cx, cy + 1 * hs, (clockTxt.length > 1 ? 24 : 30) * hs, { skew: -0.12, sw: 0.12, top: urgent ? '#ffd0d0' : '#ffffff', bot: urgent ? '#ff4040' : '#ffd23f', scale: urgent ? 1 + 0.08 * Math.max(0, Math.sin(S.real * 14)) : 1 });
-    ctx.save();
-    ctx.font = `italic 900 ${Math.round(9 * hs)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(230,240,255,0.85)';
-    ctx.fillText('THE SCRAP', cx, cy + r + 9 * hs);
-    ctx.restore();
-  }
-
+  // ---------------------------------------------------------------- drawing: screen-space scene fx
   function drawOverlayFx() {
-    const { W, H } = S, snap = S.snap;
-    const big = Math.min(W * 0.115, H * 0.17);
-    // popups (anchored in world space)
-    for (const p of S.pops) {
-      const [x, y] = S.w2s(p.x, p.y - easeOut(clamp(p.t / p.life, 0, 1)) * p.rise);
-      const a = p.t < p.life * 0.7 ? 1 : 1 - (p.t - p.life * 0.7) / (p.life * 0.3);
-      const sc = p.t < 0.08 ? 1.5 - (p.t / 0.08) * 0.5 : 1;
-      title(p.text, x, y, p.size * H * 1.1, { alpha: a, scale: sc, top: css(p.c1), bot: css(p.c2), maxW: W * 0.45 });
-    }
-    // intro
-    if (snap.ph === 'intro') {
-      const it = S.introT;
-      const subA = smooth(0.0, 0.2, it);
-      title('TEMPERS BOIL OVER', W / 2 + (1 - subA) * W * 0.3, H * 0.25, big * 0.28, { alpha: subA * (1 - 0.45 * smooth(0.3, 0.5, it)), ls: 0.12, sw: 0.25, top: '#d9ecff', bot: '#8fc4ff', maxW: W * 0.8 });
-      if (it > 0.3) {
-        const k = clamp((it - 0.3) / 0.16, 0, 1);
-        const sc = k < 1 ? 2.4 - easeOut(k) * 1.4 : 1 + Math.sin((it - 0.46) * 9) * 0.015;
-        title('GLOVES OFF!', W / 2, H * 0.45, big, { scale: sc, alpha: k * 1.2, top: '#ffffff', mid: '#fff1a8', bot: '#ff8a1f', maxW: W * 0.9, rot: -0.04 });
+    const { W, H } = S;
+    // knockout: radial speed lines behind the "Lights out!" plate
+    if (S.ko && S.ko.how === 'ko' && S.ko.t > 0.18 && S.ko.t < 1.4 && !S.rm) {
+      ctx.save();
+      ctx.globalAlpha = 0.35 * (1 - smooth(0.9, 1.4, S.ko.t));
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(1, H * 0.003);
+      const ccx = W / 2, ccy = H * 0.34;
+      for (let n = 0; n < 40; n++) {
+        const a = n * 0.157 + S.real * 0.2, r0 = H * (0.35 + ((n * 37) % 10) * 0.02);
+        ctx.beginPath(); ctx.moveTo(ccx + Math.cos(a) * r0, ccy + Math.sin(a) * r0); ctx.lineTo(ccx + Math.cos(a) * W, ccy + Math.sin(a) * W); ctx.stroke();
       }
-    }
-    // bell
-    if (S.brawlT >= 0 && S.brawlT < 0.8 && !S.ko) {
-      const k = S.brawlT / 0.8;
-      title('BRAWL!', W / 2, H * 0.44, big * 1.1, { scale: 0.7 + easeOut(clamp(k * 3, 0, 1)) * 0.5 + k * 0.15, alpha: 1 - smooth(0.6, 1, k), top: '#fff', mid: '#ffd8d8', bot: '#ff3b3b', maxW: W * 0.9 });
-    }
-    // KO / decision
-    if (S.ko) {
-      const t = S.ko.t;
-      const wi = S.ko.w, cols = S.cols[wi];
-      if (S.ko.how === 'ko') {
-        if (t > 0.18) {
-          const k = clamp((t - 0.18) / 0.22, 0, 1);
-          // radial speed lines
-          if (t < 1.4) {
-            ctx.save(); ctx.globalAlpha = 0.35 * (1 - smooth(0.9, 1.4, t)); ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(1, H * 0.003);
-            const ccx = W / 2, ccy = H * 0.42;
-            for (let n = 0; n < 40; n++) { const a = n * 0.157 + S.real * 0.2; const r0 = H * (0.35 + ((n * 37) % 10) * 0.02); ctx.beginPath(); ctx.moveTo(ccx + Math.cos(a) * r0, ccy + Math.sin(a) * r0); ctx.lineTo(ccx + Math.cos(a) * W, ccy + Math.sin(a) * W); ctx.stroke(); }
-            ctx.restore();
-          }
-          const out = smooth(1.05, 1.45, t);
-          if (out < 1) title('LIGHTS OUT!', W / 2, H * (0.4 - 0.06 * out), big * 1.05, { scale: 2.2 - easeOut(k) * 1.2 - out * 0.25, alpha: k * (1 - out), top: '#ffffff', mid: '#fff3b0', bot: '#ffb21f', maxW: W * 0.92, rot: -0.05 });
-        }
-      } else if (t < 1.0) {
-        const k = clamp(t / 0.2, 0, 1);
-        title('TIME!', W / 2, H * 0.42, big, { scale: 1.8 - easeOut(k) * 0.8, alpha: k * (1 - smooth(0.7, 1.0, t)), top: '#fff', bot: '#9fd8ff' });
-      }
-      const bt = S.ko.how === 'ko' ? 1.05 : 0.75;
-      if (t > bt) {
-        const k = easeOut(clamp((t - bt) / 0.3, 0, 1));
-        const by = H * 0.035, bh2 = H * 0.13;   // replaces the HUD strip (the HUD fades out underneath)
-        ctx.save();
-        ctx.translate((1 - k) * -W, 0);
-        ctx.beginPath(); ctx.moveTo(-10, by); ctx.lineTo(W * 0.96, by); ctx.lineTo(W * 0.9, by + bh2); ctx.lineTo(-10, by + bh2); ctx.closePath();
-        const g = ctx.createLinearGradient(0, by, W, by);
-        g.addColorStop(0, css(shade(cols.p, 0.55))); g.addColorStop(0.5, css(cols.p)); g.addColorStop(1, css(shade(cols.p, 0.75)));
-        ctx.fillStyle = g; ctx.fill();
-        ctx.fillStyle = css(cols.s); ctx.fillRect(-10, by + bh2 - H * 0.012, W * 0.9, H * 0.012);
-        ctx.fillStyle = css(cols.a, 0.9); ctx.fillRect(-10, by, W * 0.96, H * 0.006);
-        ctx.restore();
-        const light = lum(cols.p) > 0.62;
-        const txtTop = light ? '#1a1a1a' : '#ffffff', txtBot = light ? '#3a3a3a' : '#ffe9a6';
-        title(`${S.names[wi]} WINS THE SCRAP`, W * 0.46 + (1 - k) * -W, by + bh2 * 0.42, bh2 * 0.46, { top: txtTop, bot: txtBot, stroke: light ? 'rgba(255,255,255,0.6)' : css(INK), maxW: W * 0.82 });
-        if (S.reward) title(S.reward, W * 0.46 + (1 - k) * -W * 1.3, by + bh2 * 0.82, bh2 * 0.2, { top: '#ffffff', bot: '#ffcf4a', ls: 0.12, maxW: W * 0.7, sw: 0.3 });
-      }
+      ctx.restore();
     }
   }
 
@@ -1266,7 +1418,8 @@ export function createFightView(container) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (W < 2 || H < 2) return;
     const u = S.u, gy = S.gy;
-    const sx = (Math.random() - 0.5) * 2 * S.shake, sy = (Math.random() - 0.5) * 2 * S.shake;
+    const shake = S.rm ? 0 : S.shake * S.shakeK;
+    const sx = (Math.random() - 0.5) * 2 * shake, sy = (Math.random() - 0.5) * 2 * shake;
     ctx.globalAlpha = 1;
     // backdrop with a little parallax
     const zb = 1 + (S.cam.z - 1) * 0.3, pan = S.cam.p * u;
@@ -1282,39 +1435,182 @@ export function createFightView(container) {
     drawWorld();
     // screen-space
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // vignette
     if (S.vig) ctx.drawImage(S.vig, 0, 0, W, H);
     if (S.slowT > 0) { ctx.fillStyle = `rgba(20,0,10,${(0.25 * clamp(S.slowT / 0.3, 0, 1)).toFixed(3)})`; ctx.fillRect(0, 0, W, H); }
-    // cinematic bars
-    const lb = H * 0.055 * easeOut(S.shown);
-    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, lb); ctx.fillRect(0, H - lb * 1.25, W, lb * 1.25);
     drawOverlayFx();
-    // the HUD bows out while the winner banner slides over it
-    const hudA = S.ko ? 1 - smooth(S.ko.how === 'ko' ? 1.0 : 0.7, S.ko.how === 'ko' ? 1.3 : 1.0, S.ko.t) : 1;
-    if (hudA > 0.01) {
-      S.alphaMul = hudA; ctx.globalAlpha = hudA;
-      drawHUD();
-      S.alphaMul = 1; ctx.globalAlpha = 1;
+    const fl = S.flashOn ? (S.rm ? Math.min(S.flash, 0.12) : S.flash) : 0;
+    if (fl > 0) { ctx.fillStyle = css(S.flashCol, fl); ctx.fillRect(0, 0, W, H); }
+  }
+
+  // ---------------------------------------------------------------- DOM HUD
+  // Top band (name plates, hp, stamina, dodge, clock), chips (combo, counter ready), the big title
+  // plate, pop-ups, the winner band and the key-tile hint band. Writes only what changed.
+  const SURFACE = [17, 24, 41];               // --surface, for the number avatar tint
+  const EDGE_GOAL = '#91302F', EDGE_FIRE = '#915324';   // callout kit: goal / fire 55% over ground
+  function hudSetup() {
+    [sideA, sideB].forEach((sd, i) => {
+      const col = S.cols[i].p;
+      sd.side.style.setProperty('--ir-team', css(col));
+      sd.num.style.color = css(col);
+      sd.num.style.background = css(mixc(SURFACE, col, lum(col) > 0.6 ? 0.3 : 0.35));
+      const n = S.nums[i] === '' || S.nums[i] == null ? '' : String(S.nums[i]);
+      sd.numTxt.textContent = n;
+      sd.num.style.display = n ? '' : 'none';
+      sd.name.textContent = S.names[i];
+      sd.ctrl.textContent = S.ctrls[i];
+      sd.ctrl.style.display = S.ctrls[i] ? '' : 'none';
+      sd.last = {};
+    });
+    for (const c of chips) {
+      c.last = {};
+      c.combo.classList.remove('ir-fight-show');
+      c.counter.classList.remove('ir-fight-show');
     }
-    if (S.hint && S.snap.ph !== 'ko') {
-      ctx.save();
-      ctx.font = `italic 800 ${Math.round(clamp(H * 0.022, 10, 18))}px ${FONT}`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      if ('letterSpacing' in ctx) ctx.letterSpacing = '1px';
-      ctx.fillStyle = 'rgba(230,240,255,0.78)';
-      let txt = S.hint;
-      const maxW = W - 24;
-      if (ctx.measureText(txt).width > maxW) { ctx.font = `italic 800 ${Math.round(clamp(H * 0.022, 10, 18) * maxW / ctx.measureText(txt).width)}px ${FONT}`; }
-      ctx.fillText(txt, W / 2, H - lb * 0.62);
-      ctx.restore();
+    S.callKey = ''; call.className = 'ir-fight-callout';
+    S.bannerOn = false; banner.className = 'ir-fight-banner';
+    S.clockTxt = null; S.urgent = null; S.koCls = null;
+    root.classList.remove('ir-fight-done', 'ir-fight-ko');
+    pops.textContent = '';
+    hintEl.textContent = '';
+    for (const it of S.hint) {
+      const k = el('ir-fight-key', hintEl);
+      if (it.key) {
+        const t = el('ir-fight-tile', k);
+        if (it.mouse) { t.classList.add('ir-fight-one'); t.innerHTML = mouseSVG(it.mouse); t.title = it.key; }
+        else { t.textContent = it.key; if ([...it.key].length === 1) t.classList.add('ir-fight-one'); }
+      }
+      el('ir-fight-act', k, 'div', it.label);
     }
-    if (S.flash > 0) { ctx.fillStyle = css(S.flashCol, S.flash); ctx.fillRect(0, 0, W, H); }
+  }
+
+  function vsLine(target) {
+    target.textContent = '';
+    for (let i = 0; i < 2; i++) {
+      const n = el('', target, 'span', S.names[i]);
+      n.style.color = css(S.cols[i].p);
+      if (i === 0) el('ir-fight-vs', target, 'span', 'vs');
+    }
+  }
+
+  function hudFrame() {
+    const snap = S.snap;
+    [sideA, sideB].forEach((sd, i) => {
+      const F = S.F[i], L = sd.last;
+      const hp = clamp(F.hpShow, 0, FIGHT.HP);
+      const hpN = Math.round(hp);
+      if (L.hp !== hpN) { L.hp = hpN; sd.hp.textContent = String(hpN); sd.hp.classList.toggle('ir-fight-low', hpN < LOW_HP); }
+      const fw = ((hp / FIGHT.HP) * 100).toFixed(1), tw = ((clamp(F.hpTrail, 0, FIGHT.HP) / FIGHT.HP) * 100).toFixed(1);
+      if (L.fw !== fw) { L.fw = fw; sd.fill.style.width = `${fw}%`; }
+      if (L.tw !== tw) { L.tw = tw; sd.trail.style.width = `${tw}%`; }
+      // stamina: 10 pips filling from the outer edge, warn colour + "Stamina low" when tired
+      const en = Math.round(clamp(+(i === 0 ? snap.enA : snap.enB) || 0, 0, 1) * 50) / 50;
+      if (L.en !== en) {
+        L.en = en;
+        for (let k = 0; k < 10; k++) sd.pips[k].style.setProperty('--f', clamp(en * 10 - k, 0, 1).toFixed(2));
+        const tired = en < 0.25;
+        if (L.tired !== tired) { L.tired = tired; sd.meta.classList.toggle('ir-fight-tired', tired); sd.stam.textContent = tired ? FIGHT_COPY.staminaLow : FIGHT_COPY.stamina; }
+      }
+      // dodge: green dot "Dodge ready", or a filling pie "Dodge recharging"
+      const cd = Math.round(clamp(+(i === 0 ? snap.cdA : snap.cdB) || 0, 0, 1) * 40) / 40;
+      if (L.cd !== cd) {
+        L.cd = cd;
+        const ready = cd <= 0;
+        if (L.ready !== ready) { L.ready = ready; sd.meta.classList.toggle('ir-fight-cool', !ready); sd.dodge.textContent = ready ? FIGHT_COPY.dodgeReady : FIGHT_COPY.dodgeWait; }
+        sd.meta.style.setProperty('--cd', (1 - cd).toFixed(3));
+      }
+      // chips under the band
+      const ch = chips[i], CL = ch.last;
+      const comboOn = F.comboShow > 0 && F.comboN >= 2 && !S.ko;
+      if (comboOn && CL.comboN !== F.comboN) { CL.comboN = F.comboN; ch.combo.textContent = comboText(F.comboN); }
+      if (CL.combo !== comboOn) { CL.combo = comboOn; ch.combo.classList.toggle('ir-fight-show', comboOn); }
+      const crOn = !!((i === 0 ? snap.crA : snap.crB) | 0) && snap.ph === 'fight';
+      if (CL.cr !== crOn) { CL.cr = crOn; ch.counter.classList.toggle('ir-fight-show', crOn); }
+    });
+
+    // centre clock tile
+    let ct, urgent = false;
+    if (snap.ph === 'intro') ct = String(FIGHT.DURATION);
+    else if (snap.ph === 'fight') { ct = String(Math.max(0, Math.ceil(snap.t - 1e-6))); urgent = snap.t <= 3; }
+    else ct = snap.how === 'ko' ? 'KO' : '0';
+    if (S.clockTxt !== ct) { S.clockTxt = ct; clockN.textContent = ct; }
+    if (S.urgent !== urgent) { S.urgent = urgent; clock.classList.toggle('ir-fight-urgent', urgent); }
+    const koCls = snap.ph === 'ko';
+    if (S.koCls !== koCls) { S.koCls = koCls; root.classList.toggle('ir-fight-ko', koCls); }
+
+    // big title plate
+    let key = '', text = '', edge = '', mid = false, icon = false, vs = false;
+    if (snap.ph === 'intro') {
+      if (S.introT < 0.3) { key = 'tempers'; text = FIGHT_COPY.tempers; mid = true; }
+      else { key = 'gloves'; text = FIGHT_COPY.gloves; edge = EDGE_FIRE; vs = true; }
+    } else if (S.brawlT >= 0 && S.brawlT < 0.8 && !S.ko) { key = 'brawl'; text = FIGHT_COPY.brawl; edge = EDGE_GOAL; }
+    if (S.ko) {
+      key = ''; text = '';
+      if (S.ko.how === 'ko') { if (S.ko.t > 0.18 && S.ko.t < 1.25) { key = 'ko'; text = FIGHT_COPY.ko; edge = EDGE_GOAL; icon = true; } }
+      else if (S.ko.t < 0.85) { key = 'time'; text = FIGHT_COPY.time; }
+    }
+    if (key !== S.callKey) {
+      S.callKey = key;
+      if (key) {
+        callT.textContent = text;
+        if (vs) vsLine(callS); else callS.textContent = '';
+        if (edge) call.style.setProperty('--ir-edge', edge); else call.style.removeProperty('--ir-edge');
+        call.className = 'ir-fight-callout' + (mid ? ' ir-fight-mid' : '') + (icon ? ' ir-fight-icon' : '');
+        void call.offsetWidth;   // restart the open animation for the new title
+        call.classList.add('ir-fight-show');
+      } else call.classList.remove('ir-fight-show');
+    }
+
+    // winner band: slides over the top band once the fight is decided
+    const bannerOn = !!S.ko && S.ko.t > (S.ko.how === 'ko' ? 1.05 : 0.75);
+    if (bannerOn !== S.bannerOn) {
+      S.bannerOn = bannerOn;
+      if (bannerOn) {
+        const wi = S.ko.w, col = S.cols[wi].p;
+        banner.style.setProperty('--ir-team', css(col));
+        banner.style.setProperty('--ir-on', lum(col) > 0.4 ? 'var(--on-ice, #0A0F1C)' : 'var(--ink, #E8EDF5)');
+        bannerT.textContent = winsText(S.names[wi]);
+        bannerS.textContent = S.reward;
+        crest.removeAttribute('src');
+        const cur = S;
+        crestFor(S.teams[wi], (uri) => { if (S === cur && S.bannerOn) crest.src = uri; });
+      }
+      banner.classList.toggle('ir-fight-show', bannerOn);
+      root.classList.toggle('ir-fight-done', bannerOn);
+    }
+
+    // pop-ups (small callouts) above the fighters
+    const rm = S.rm, topY = (S.bandH || 0) + 8;
+    const placed = [];   // older pops keep their spot; newer ones step down instead of overlapping
+    for (const p of S.pops) {
+      if (!p.node) {
+        const n = el('ir-fight-pop', pops);
+        el('ir-fight-pop-t', n, 'span', p.text);
+        if (!p.anon) { const nm = el('ir-fight-pop-n', n, 'span', S.names[p.i]); nm.style.color = css(S.cols[p.i].p); }
+        p.node = n; p.w = n.offsetWidth; p.h = n.offsetHeight;
+      }
+      const k = clamp(p.t / p.life, 0, 1);
+      const [x, y] = S.w2s ? S.w2s(p.x, p.y - (rm ? 0 : easeOut(k) * p.rise)) : [S.W / 2, S.H / 3];
+      const a = rm ? 1 : p.t < 0.16 ? easeOut(p.t / 0.16) : clamp((p.life - p.t) / 0.12, 0, 1);
+      const sc = rm ? 1 : 0.96 + 0.04 * easeOut(clamp(p.t / 0.16, 0, 1));
+      const px = clamp(x - p.w / 2, 8, Math.max(8, S.W - p.w - 8));
+      let py = clamp(y - p.h, topY, Math.max(topY, S.H - p.h - 8));
+      for (let guard = 0; guard < 6; guard++) {
+        const hit = placed.find((r) => px < r.x + r.w + 6 && px + p.w + 6 > r.x && py < r.y + r.h + 6 && py + p.h + 6 > r.y);
+        if (!hit) break;
+        py = hit.y + hit.h + 6;
+      }
+      placed.push({ x: px, y: py, w: p.w, h: p.h });
+      p.node.style.transform = `translate(${px.toFixed(1)}px,${py.toFixed(1)}px) scale(${sc.toFixed(3)})`;
+      p.node.style.opacity = a.toFixed(3);
+    }
   }
 
   // ---------------------------------------------------------------- public API
   function show(snap, opts) {
     if (disposed) return;
     S = fresh(snap || null, opts);
+    S.rm = reducedMotion();
+    hudSetup();
     if (snap) {
       S.lastPh = snap.ph;
       if (snap.ph === 'intro') S.introT = clamp(FIGHT.INTRO - (+snap.t || 0), 0, FIGHT.INTRO);
@@ -1326,7 +1622,7 @@ export function createFightView(container) {
     if (S.introT >= 0.5) for (let i = 0; i < 2; i++) S.F[i].helmet = false;
     root.classList.add('ir-fight-on');
     fit();
-    if (S.snap) { step(0); drawFrame(); }
+    if (S.snap) { step(0); drawFrame(); hudFrame(); }
   }
 
   function update(snap, dt, events) {
@@ -1344,12 +1640,15 @@ export function createFightView(container) {
     }
     step(dt);
     drawFrame();
+    hudFrame();
   }
 
   function hide() {
     if (!S) return;
     S.on = false;
     root.classList.remove('ir-fight-on');
+    for (const p of S.pops) if (p.node) p.node.remove();
+    S.pops = [];
   }
 
   function dispose() {
@@ -1361,5 +1660,5 @@ export function createFightView(container) {
     if (!styleUsers) { const st = doc.getElementById(STYLE_ID); if (st) st.remove(); }
   }
 
-  return { show, update, hide, dispose, get visible() { return !!(S && S.on); }, canvas };
+  return { show, update, hide, dispose, get visible() { return !!(S && S.on); }, canvas, el: root };
 }

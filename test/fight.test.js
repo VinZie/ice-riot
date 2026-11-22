@@ -354,5 +354,183 @@ test('shouldTriggerFight rule', () => {
   assert(!shouldTriggerFight());
 });
 
+// ------------------------------------------------------------------ fight view (public/fight-view.js)
+// Pure helpers, then the real view driven through a tiny fake DOM + a no-op 2D context.
+const viewMod = await import('../public/fight-view.js');
+const { parseHint, popFor, FIGHT_COPY, winsText, comboText, DEFAULT_HINT, LOW_HP, createFightView } = viewMod;
+const { TEAMS } = await import('../shared/constants.js');
+
+test('view: parseHint splits the extras hint into key tiles (mouse keys get the glyph)', () => {
+  const h = parseHint('Left click jab · L haymaker · Right click block · L-Shift dodge');
+  assert(JSON.stringify(h) === JSON.stringify([
+    { key: 'Left click', mouse: 'left', label: 'Jab' }, { key: 'L', mouse: null, label: 'Haymaker' },
+    { key: 'Right click', mouse: 'right', label: 'Block' }, { key: 'L-Shift', mouse: null, label: 'Dodge' },
+  ]), JSON.stringify(h));
+  // the old all-caps hint still reads in sentence case
+  const old = parseHint('J JAB · L HAYMAKER · K BLOCK · SHIFT DODGE');
+  assert(old.map((x) => x.key + ' ' + x.label).join('|') === 'J Jab|L Haymaker|K Block|Shift Dodge', JSON.stringify(old));
+  const misc = parseHint('Middle click poke · Mouse2 block · Num + jab · R = new fight · ↑ up · Wave');
+  assert(misc[0].mouse === 'middle' && misc[1].mouse === 'right' && misc[1].key === 'Right click', JSON.stringify(misc));
+  assert(misc[2].key === 'Num +' && misc[2].label === 'Jab', 'keys with spaces: the action is the last word');
+  assert(misc[3].key === 'R' && misc[3].label === 'New fight', '"key = action" form');
+  assert(misc[4].key === '↑' && misc[5].key === '' && misc[5].label === 'Wave', 'glyph key, key-less item');
+  assert(parseHint(DEFAULT_HINT).length === 4 && parseHint('').length === 0 && parseHint(null).length === 0 && parseHint(false).length === 0);
+});
+
+test('view: pop-up words for fight events', () => {
+  const by = 0;
+  const t = (e, b = by) => { const p = popFor(e, b); return p ? `${p.text}@${p.side}` : null; };
+  assert(t({ type: 'punch', kind: 'jab' }) === null, 'plain jab: no pop');
+  assert(t({ type: 'punch', kind: 'hay' }) === 'Haymaker!@0');
+  assert(t({ type: 'punch', kind: 'jab', ctr: 1 }) === 'Counter!@0');
+  assert(t({ type: 'punch', kind: 'jab', int: 1 }) === 'Interrupted!@1', 'interrupted shows on the victim');
+  assert(t({ type: 'fight', sub: 'block', brk: 0 }, 1) === 'Blocked@1' && t({ type: 'block', brk: 1 }) === 'Guard break!@0');
+  assert(t({ type: 'dodge' }) === 'Whiff!@1', 'whiff shows on the attacker');
+  assert(t({ type: 'grab', clash: 1 }) === 'Tie-up!@0' && t({ type: 'grab' }) === null);
+  assert(t({ type: 'punch', kind: 'hay' }, -1) === null && t(null) === null && t({ type: 'ko' }) === null);
+});
+
+test('view: copy is sentence case (no shouting), callout words as designed', () => {
+  for (const [k, v] of Object.entries(FIGHT_COPY)) {
+    assert(typeof v === 'string' && v.length, k);
+    assert(!/[A-Z]{2,}/.test(v), `${k} has caps: ${v}`);
+    assert(/^[A-Z]/.test(v), `${k} starts upper case: ${v}`);
+  }
+  assert(FIGHT_COPY.tempers === 'Tempers boil over' && FIGHT_COPY.gloves === 'Gloves off!' && FIGHT_COPY.brawl === 'Brawl!');
+  assert(FIGHT_COPY.ko === 'Lights out!' && FIGHT_COPY.time === 'Time!' && FIGHT_COPY.reward === 'Full turbo + on fire');
+  assert(winsText('Oduya') === 'Oduya wins the scrap' && comboText(6) === '6 hit combo' && LOW_HP === 30);
+});
+
+// ---- fake DOM
+class FakeEl {
+  constructor(tag, doc) {
+    this.tagName = tag.toUpperCase(); this.ownerDocument = doc; this.children = []; this.parentNode = null;
+    this.cls = new Set(); this.attrs = {}; this.txt = ''; this.html = ''; this.id = '';
+    this.offsetWidth = 140; this.offsetHeight = 52; this.clientWidth = 1440; this.clientHeight = 900;
+    const st = {}; st.setProperty = (k, v) => { st[k] = String(v); }; st.removeProperty = (k) => { delete st[k]; };
+    this.style = st;
+  }
+  get className() { return [...this.cls].join(' '); }
+  set className(v) { this.cls = new Set(String(v).split(/\s+/).filter(Boolean)); }
+  get classList() {
+    const s = this.cls;
+    return {
+      add: (...c) => c.forEach((x) => s.add(x)), remove: (...c) => c.forEach((x) => s.delete(x)), contains: (c) => s.has(c),
+      toggle: (c, on) => { const w = on === undefined ? !s.has(c) : !!on; if (w) s.add(c); else s.delete(c); return w; },
+    };
+  }
+  get textContent() { return this.txt + this.children.map((c) => c.textContent).join(''); }
+  set textContent(v) { this.children = []; this.html = ''; this.txt = String(v); }
+  get innerHTML() { return this.html; }
+  set innerHTML(v) { this.children = []; this.txt = ''; this.html = String(v); }
+  appendChild(c) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.children.push(c); return c; }
+  append(...cs) { for (const c of cs) this.appendChild(c); }
+  removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); c.parentNode = null; return c; }
+  remove() { if (this.parentNode) this.parentNode.removeChild(this); }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  removeAttribute(k) { delete this.attrs[k]; if (k === 'src') delete this.src; }
+  getContext() {
+    const grad = { addColorStop() {} };
+    return new Proxy({}, {
+      get: (t, k) => (k in t ? t[k] : k === 'measureText' ? () => ({ width: 10 }) : String(k).startsWith('create') ? () => grad : () => {}),
+      set: (t, k, v) => { t[k] = v; return true; },
+    });
+  }
+}
+function fakeDoc() {
+  const doc = {
+    createElement: (t) => new FakeEl(t, doc),
+    createTextNode: (s) => ({ textContent: String(s), parentNode: null }),
+    defaultView: { devicePixelRatio: 1, getComputedStyle: () => ({ position: 'relative' }), matchMedia: () => ({ matches: false }) },
+  };
+  doc.head = new FakeEl('head', doc); doc.body = new FakeEl('body', doc); doc.documentElement = new FakeEl('html', doc);
+  doc.getElementById = (id) => all(doc.head, (e) => e.id === id)[0] || null;
+  return doc;
+}
+function all(el, pred, out = []) { if (el && el.children) { if (pred(el)) out.push(el); for (const c of el.children) all(c, pred, out); } return out; }
+const q1 = (root, cls) => all(root, (e) => e.cls && e.cls.has(cls))[0];
+const qa = (root, cls) => all(root, (e) => e.cls && e.cls.has(cls));
+
+test('view: DOM HUD - plates, hp, stamina, dodge, clock, titles, pop-ups, winner band, key tiles', () => {
+  const doc = fakeDoc();
+  const host = doc.createElement('div');
+  doc.body.appendChild(host);
+  const view = createFightView(host);
+  const style = doc.getElementById('ir-fight-style');
+  assert(style && /var\(--ground,#0A0F1C\)/.test(style.textContent) && /prefers-reduced-motion/.test(style.textContent), 'tokens + reduced motion');
+  assert(!/text-shadow|letter-spacing:\.|text-transform|skew|clip-path/.test(style.textContent), 'no shadows, caps or skew in the HUD css');
+  const f = createFight({ a: 1, b: 5, teamA: 0, teamB: 1, chkA: 9, chkB: 9, seed: 7 });
+  view.show(fightSnapshot(f), {
+    nameA: 'Oduya', nameB: 'Bergeron-Ash', numA: 4, numB: 2, ctrlA: 'Mags', ctrlB: 'AI',
+    colorA: TEAMS[0].colors, colorB: TEAMS[1].colors, teamA: 0, teamB: 1,
+    hint: 'Left click jab · L haymaker · Right click block · L-Shift dodge',
+  });
+  const root = view.el;
+  assert(root.cls.has('ir-fight-on') && root.attrs['aria-hidden'] === 'true', 'shown, decorative');
+  const [plA, plB] = qa(root, 'ir-fight-plate');
+  assert(q1(plA, 'ir-fight-name').textContent === 'Oduya' && q1(plB, 'ir-fight-name').textContent === 'Bergeron-Ash', 'names as given');
+  assert(q1(plA, 'ir-fight-ctrl').textContent === 'Mags' && q1(plB, 'ir-fight-ctrl').textContent === 'AI', 'controller names');
+  assert(q1(plA, 'ir-fight-num').textContent === '4' && q1(plB, 'ir-fight-num').textContent === '2', 'number avatars');
+  assert(q1(plA, 'ir-fight-hp').textContent === '100', 'hp number');
+  assert(q1(root, 'ir-fight-clock-n').textContent === String(FIGHT.DURATION) && q1(root, 'ir-fight-clock-l').textContent === 'The scrap', 'clock tile');
+  const call = q1(root, 'ir-fight-callout'), callT = q1(root, 'ir-fight-callout-t');
+  assert(call.cls.has('ir-fight-show') && callT.textContent === 'Tempers boil over', 'intro title: ' + callT.textContent);
+  // key tiles
+  const keys = qa(q1(root, 'ir-fight-hint'), 'ir-fight-key');
+  assert(keys.length === 4, 'four key tiles');
+  assert(/<svg/.test(q1(keys[0], 'ir-fight-tile').innerHTML) && q1(keys[1], 'ir-fight-tile').textContent === 'L', 'mouse glyph / letter tile');
+  assert(keys.map((k) => q1(k, 'ir-fight-act').textContent).join(',') === 'Jab,Haymaker,Block,Dodge', 'labels');
+
+  const run = (n, inA = NONE, inB = NONE, extra = []) => {
+    for (let i = 0; i < n; i++) {
+      if (!f.done) stepFight(f, DT, inA, inB);
+      view.update(fightSnapshot(f), DT, i === 0 ? drainFightEvents(f).concat(extra) : drainFightEvents(f));
+    }
+  };
+  run(Math.ceil(0.35 / DT));
+  assert(callT.textContent === 'Gloves off!' && q1(root, 'ir-fight-callout-s').textContent === 'Oduyavs' + 'Bergeron-Ash', 'gloves off + names');
+  run(Math.ceil(FIGHT.INTRO / DT));
+  assert(callT.textContent === 'Brawl!' && call.cls.has('ir-fight-show'), 'brawl: ' + callT.textContent);
+  run(Math.ceil(0.9 / DT));
+  assert(!call.cls.has('ir-fight-show'), 'title gone');
+  // hp low, stamina low, dodge cooldown, counter ready, combo, pop-ups
+  f.A.hp = 27; f.A.en = 0.05; f.B.cd = FIGHT.DODGE.cd * 0.9; f.A.ctrT = 2;
+  run(24, NONE, NONE, [{ type: 'punch', by: 5, target: 1, kind: 'jab', power: 0.4, combo: 6 }, { type: 'block', by: 1, target: 5, kind: 'jab' }]);
+  const hpA = q1(plA, 'ir-fight-hp');
+  assert(hpA.textContent === '27' && hpA.cls.has('ir-fight-low'), `hp ${hpA.textContent} low`);
+  const [metaA, metaB] = qa(root, 'ir-fight-meta');
+  assert(metaA.cls.has('ir-fight-tired') && metaA.textContent.includes('Stamina low'), 'stamina low');
+  assert(metaB.cls.has('ir-fight-cool') && metaB.textContent.includes('Dodge recharging') && metaA.textContent.includes('Dodge ready'), 'dodge states');
+  const chipsA = q1(root, 'ir-fight-chips-a'), chipsB = q1(root, 'ir-fight-chips-b');
+  assert(q1(chipsA, 'ir-fight-counter').cls.has('ir-fight-show') && q1(chipsA, 'ir-fight-counter').textContent === 'Counter ready', 'counter ready chip');
+  assert(q1(chipsB, 'ir-fight-combo').cls.has('ir-fight-show') && q1(chipsB, 'ir-fight-combo').textContent === '6 hit combo', 'combo chip');
+  const popTexts = qa(root, 'ir-fight-pop-t').map((p) => p.textContent);
+  assert(popTexts.includes('Blocked'), 'pop-up: ' + popTexts.join(','));
+  const fills = qa(root, 'ir-fight-fill');
+  assert(Math.abs(parseFloat(fills[0].style.width) - 27) < 0.3 && /%$/.test(fills[0].style.width), 'hp bar width ' + fills[0].style.width);
+  // knockout -> "Lights out!", then the winner band
+  f.B.hp = 1;
+  for (let i = 0; i < 120 && f.ph !== 'ko'; i++) run(1, i % 30 === 0 ? { b: BTN.ACTION } : NONE, NONE);
+  assert(f.ph === 'ko' && f.winner === 1, 'A knocked B out');
+  run(Math.ceil(0.4 / DT));
+  assert(callT.textContent === 'Lights out!' && call.cls.has('ir-fight-icon'), 'lights out');
+  assert(root.cls.has('ir-fight-ko'), 'hint tiles fade during the outro');
+  run(Math.ceil(1.0 / DT));
+  const banner = q1(root, 'ir-fight-banner');
+  assert(banner.cls.has('ir-fight-show') && q1(banner, 'ir-fight-banner-t').textContent === 'Oduya wins the scrap', 'winner band');
+  assert(q1(banner, 'ir-fight-banner-s').textContent === 'Full turbo + on fire' && root.cls.has('ir-fight-done'), 'reward line, band content fades');
+  assert(q1(root, 'ir-fight-clock-n').textContent === 'KO', 'clock shows KO');
+  // next fight: spectator (no hint band), no reward line, state resets
+  view.hide();
+  assert(!root.cls.has('ir-fight-on') && qa(root, 'ir-fight-pop').length === 0, 'hidden, pop-ups cleared');
+  const g = createFight({ a: 2, b: 6, seed: 3 });
+  view.show(fightSnapshot(g), { nameA: 'Lindqvist', nameB: 'Tamura', hint: false, reward: false });
+  assert(q1(root, 'ir-fight-hint').children.length === 0, 'no hint band for spectators');
+  assert(!q1(root, 'ir-fight-banner').cls.has('ir-fight-show') && !root.cls.has('ir-fight-done'), 'reset');
+  assert(qa(root, 'ir-fight-ctrl').every((c) => c.style.display === 'none'), 'no controller names given');
+  view.dispose();
+  assert(!host.children.includes(root) && !doc.getElementById('ir-fight-style'), 'disposed');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

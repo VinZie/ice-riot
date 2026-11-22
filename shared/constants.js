@@ -72,7 +72,10 @@ export const PHASE = {
   PERIOD_END: 4,  // intermission, then FACEOFF of next period (or GAME_OVER)
   GAME_OVER: 5,
 };
-export const PHASE_DURATION = { FACEOFF: 1.6, GOAL: 3.5, PERIOD_END: 4.0 };
+// GOAL holds play long enough for the client's instant replay (public/extras.js planReplay), which
+// starts 0.8 s after the goal and must end before the faceoff drops the puck: the run-up, the 0.35x
+// windup and the 0.15x puck-going-in finish.
+export const PHASE_DURATION = { FACEOFF: 1.6, GOAL: 9, PERIOD_END: 4.0 };
 
 // Skater / goalie states (snapshot player `s`).
 export const PSTATE = {

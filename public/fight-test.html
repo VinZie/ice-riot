@@ -4,18 +4,30 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ICE RIOT - fight test</title>
+<link rel="icon" href="data:,">
 <style>
-  html, body { margin: 0; height: 100%; background: #070a14; color: #dfe9ff; font: 13px/1.4 system-ui, sans-serif; overflow: hidden; }
-  #stage { position: absolute; inset: 0;
-    background:
-      repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0 2px, transparent 2px 120px),
-      linear-gradient(#1a2740 0 40%, #cfe0ee 40% 100%); }
-  #fake { position: absolute; left: 50%; top: 58%; transform: translate(-50%, -50%); font: italic 900 40px 'Arial Black', sans-serif; color: rgba(20,30,60,0.25); }
-  #panel { position: absolute; left: 10px; bottom: 10px; z-index: 100; background: rgba(5,8,18,0.82); border: 1px solid rgba(255,255,255,0.15);
-    border-radius: 8px; padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; max-width: calc(100vw - 40px); }
-  #panel select, #panel button { font: inherit; background: #121a2e; color: #dfe9ff; border: 1px solid #34456b; border-radius: 4px; padding: 2px 6px; }
-  #panel button { cursor: pointer; }
-  #status { width: 100%; opacity: 0.85; }
+  html, body { margin: 0; height: 100%; background: var(--ground, #0A0F1C); color: var(--ink, #E8EDF5);
+    font: 13px/18px var(--f-ui, Bahnschrift, "DIN Alternate", "Segoe UI", sans-serif); overflow: hidden; }
+  #stage { position: absolute; inset: 0; background: linear-gradient(#172034 0 40%, #DCEAF6 40% 100%); }
+  #fake { position: absolute; left: 50%; top: 58%; transform: translate(-50%, -50%); font-size: 40px; font-weight: 700; font-style: italic; color: rgba(10,15,28,.2); }
+  #panel { position: absolute; left: 16px; bottom: 76px; z-index: 100; background: var(--surface, #111829);
+    border: 1px solid var(--hairline-strong, #34425F); border-radius: var(--r-lg, 16px);
+    padding: 10px 12px; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; max-width: min(620px, calc(100vw - 56px)); }
+  #panel label { display: flex; align-items: center; gap: 6px; color: var(--ink-2, #A1ACC0); font-size: 12px; }
+  #panel select, #panel button { font: inherit; font-size: 12px; color: var(--ink, #E8EDF5); background: transparent;
+    border: 1px solid var(--hairline-strong, #34425F); border-radius: var(--r-sm, 6px); padding: 3px 8px; }
+  #panel select option { background: var(--surface, #111829); }
+  /* no native controls: a select with its own chevron, a checkbox drawn like the settings sheet's */
+  #panel select { appearance: none; -webkit-appearance: none; height: 28px; padding: 0 24px 0 8px;
+    background: var(--ground, #0A0F1C) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23A1ACC0' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>") no-repeat right 8px center; }
+  #panel input[type=checkbox] { appearance: none; -webkit-appearance: none; flex: none; width: 14px; height: 14px; margin: 0;
+    border: 1px solid var(--hairline-strong, #34425F); border-radius: 4px; background: var(--ground, #0A0F1C); display: grid; place-content: center; cursor: pointer; }
+  #panel input[type=checkbox]:checked { background: var(--ice, #DCEAF6); border-color: var(--ice, #DCEAF6); }
+  #panel input[type=checkbox]:checked::after { content: ""; width: 7px; height: 3.5px; margin-top: -2px; border: solid var(--on-ice, #0A0F1C); border-width: 0 0 2px 2px; transform: rotate(-45deg); }
+  #panel button { height: 28px; padding: 0 12px; font-weight: 600; }
+  #panel button { cursor: pointer; background: var(--ice, #DCEAF6); color: var(--on-ice, #0A0F1C); border-color: var(--ice, #DCEAF6); border-radius: var(--r-md, 10px); }
+  #panel select:focus-visible, #panel button:focus-visible, #panel input:focus-visible { outline: 2px solid var(--focus, #E8EDF5); outline-offset: 2px; }
+  #status { width: 100%; color: var(--ink-2, #A1ACC0); font-size: 12px; }
   body.shot #panel { display: none; }
 </style>
 </head>
@@ -24,16 +36,19 @@
 <div id="panel">
   <label>You <select id="ta"></select></label>
   <label>AI <select id="tb"></select></label>
-  <label>AI level <select id="diff"><option value="0">rookie</option><option value="1" selected>pro</option><option value="2">all-star</option></select></label>
+  <label>AI level <select id="diff"><option value="0">Rookie</option><option value="1" selected>Pro</option><option value="2">All-star</option></select></label>
   <label><input type="checkbox" id="auto"> AI vs AI</label>
   <button id="go">New fight (R)</button>
-  <div id="status">J / Space = jab &middot; L = haymaker &middot; K = block (hold) &middot; Shift = dodge</div>
+  <div id="status">Left click or J jab · L haymaker · right click or K block (hold) · L-Shift dodge</div>
 </div>
 <script type="module">
 import { TEAMS, BTN, DT } from '../shared/constants.js';
 import { createFight, stepFight, fightSnapshot, drainFightEvents, fightAI, fightResult, FIGHT } from '../shared/fight.js';
 import { createFightView } from './fight-view.js';
 
+// URL params: ta, tb (TEAMS indices), diff, auto=1 (AI vs AI), seed, me (your name), shot=1 (hide the panel),
+// ff=<seconds> fast-forward, freeze=1 (hold that frame), hp=<n> both fighters' hp,
+// set=A.hp:28,B.cd:0.4 (raw fight fields, applied after ff), ev=<json array> (fight events injected once after ff).
 const q = new URLSearchParams(location.search);
 const $ = (id) => document.getElementById(id);
 for (const sel of [$('ta'), $('tb')]) TEAMS.forEach((t, i) => sel.add(new Option(`${t.city} ${t.name}`, i)));
@@ -46,8 +61,9 @@ if (q.get('shot') === '1') document.body.classList.add('shot');
 const view = createFightView($('stage'));
 window.__view = view;
 
-// keyboard: held keys + latched taps (a tap between two sim steps is never lost)
+// keyboard + mouse: held inputs + latched taps (a tap between two sim steps is never lost)
 const KEYS = { KeyJ: BTN.SHOOT, Space: BTN.SHOOT, KeyK: BTN.PASS, KeyL: BTN.ACTION, ShiftLeft: BTN.TURBO, ShiftRight: BTN.TURBO };
+const MOUSE = { 0: BTN.SHOOT, 2: BTN.PASS };
 const held = new Set();
 let latched = 0;
 addEventListener('keydown', (e) => {
@@ -59,8 +75,15 @@ addEventListener('keydown', (e) => {
   held.add(e.code); latched |= KEYS[e.code];
 });
 addEventListener('keyup', (e) => held.delete(e.code));
+$('stage').addEventListener('mousedown', (e) => { if (e.button in MOUSE) { held.add('Mouse' + e.button); latched |= MOUSE[e.button]; } });
+addEventListener('mouseup', (e) => held.delete('Mouse' + e.button));
+addEventListener('contextmenu', (e) => { if (!e.target.closest('#panel')) e.preventDefault(); });
 addEventListener('blur', () => { held.clear(); latched = 0; });
-function pollKeys() { let b = latched; latched = 0; for (const c of held) b |= KEYS[c]; return b; }
+function pollKeys() {
+  let b = latched; latched = 0;
+  for (const c of held) b |= c.startsWith('Mouse') ? MOUSE[c.slice(5)] : KEYS[c];
+  return b;
+}
 
 let fight = null, seed = +(q.get('seed') ?? 1), restartAt = -1, simTime = 0;
 function pickFighter(teamIdx, slot) {
@@ -71,15 +94,17 @@ function pickFighter(teamIdx, slot) {
 function newFight() {
   const ta = +$('ta').value, tb = +$('tb').value;
   const A = pickFighter(ta, 0), B = pickFighter(tb, 1);
+  const auto = $('auto').checked;
   fight = createFight({ a: A.id, b: B.id, teamA: ta, teamB: tb, chkA: A.s.chk, chkB: B.s.chk, seed: seed++, difficulty: +$('diff').value });
   if (q.get('hp')) { fight.A.hp = fight.B.hp = +q.get('hp'); }
   view.show(fightSnapshot(fight), {
     nameA: A.s.name, nameB: B.s.name, numA: A.s.num, numB: B.s.num,
-    colorA: TEAMS[ta].colors, colorB: TEAMS[tb].colors,
-    hint: $('auto').checked ? 'AI vs AI demo  ·  R = new fight' : 'J jab  ·  L haymaker  ·  K block  ·  SHIFT dodge',
+    ctrlA: auto ? 'AI' : (q.get('me') || 'You'), ctrlB: 'AI',
+    colorA: TEAMS[ta].colors, colorB: TEAMS[tb].colors, teamA: ta, teamB: tb,
+    hint: auto ? 'R = new fight' : 'Left click jab · L haymaker · Right click block · L-Shift dodge',
   });
   restartAt = -1;
-  $('status').textContent = `${A.s.name} (chk ${A.s.chk}) vs ${B.s.name} (chk ${B.s.chk}) - J/Space jab, L haymaker, K block, Shift dodge`;
+  $('status').textContent = `${A.s.name} (chk ${A.s.chk}) vs ${B.s.name} (chk ${B.s.chk}) · left click or J jab, L haymaker, right click or K block, L-Shift dodge`;
 }
 $('go').onclick = newFight;
 for (const id of ['ta', 'tb', 'diff', 'auto']) $(id).onchange = newFight;
@@ -103,6 +128,12 @@ if (ff > 0) {
     view.update(fightSnapshot(fight), DT, drainFightEvents(fight));
   }
 }
+for (const pair of (q.get('set') || '').split(',').filter(Boolean)) {
+  const m = /^([AB])\.(\w+):(-?[\d.]+)$/.exec(pair.trim());
+  if (m) fight[m[1]][m[2]] = +m[3];
+}
+let inject = [];
+try { inject = JSON.parse(q.get('ev') || '[]'); } catch { inject = []; }
 window.__fight = () => ({ snap: fightSnapshot(fight), result: fightResult(fight) });
 window.__raw = () => fight;
 
@@ -111,18 +142,24 @@ window.__frames = 0;
 function frame(now) {
   window.__frames++;
   const dt = Math.min(0.1, (now - last) / 1000); last = now;
-  if (q.get('freeze') === '1') { view.update(fightSnapshot(fight), 0, []); return; }
+  if (q.get('freeze') === '1') {
+    view.update(fightSnapshot(fight), inject.length ? 0.2 : 0, inject);
+    inject = [];
+    requestAnimationFrame(frame);
+    return;
+  }
   acc += dt;
   let n = 0;
   while (acc >= DT && n < 6) { acc -= DT; n++; if (!fight.done) simStep(); }
   if (n === 6) acc = 0;
-  view.update(fightSnapshot(fight), dt, drainFightEvents(fight));
+  view.update(fightSnapshot(fight), dt, drainFightEvents(fight).concat(inject));
+  inject = [];
   if (fight.done) {
     const r = fightResult(fight);
     if (restartAt < 0) {
       restartAt = now + ($('auto').checked ? 1200 : 2500);
       const wn = r.winner === fight.A.id ? 'A' : 'B';
-      $('status').textContent = `Winner: side ${wn} by ${r.how === 'ko' ? 'KO' : 'decision'} (hp ${fight.A.hp.toFixed(0)} - ${fight.B.hp.toFixed(0)}). R for a new fight.`;
+      $('status').textContent = `Winner: side ${wn} by ${r.how === 'ko' ? 'knockout' : 'decision'} (hp ${fight.A.hp.toFixed(0)} - ${fight.B.hp.toFixed(0)}). R for a new fight.`;
     } else if (now >= restartAt && $('auto').checked) newFight();
   }
   requestAnimationFrame(frame);

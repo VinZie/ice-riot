@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   DEFAULTS, ACTIONS, SETTINGS_VERSION, STORAGE_KEY, createSettings, sanitizeSettings, sanitizeKeys,
-  migrate, rebindKeys, keyLabel, isBindableCode, GAMEPAD_LAYOUT,
+  migrate, rebindKeys, keyLabel, isBindableCode, isMouseCode, GAMEPAD_LAYOUT, MOUSE_CODES, ACTION_LABELS,
 } from '../public/settings.js';
 
 let passed = 0;
@@ -36,27 +36,45 @@ const noDupes = (keys) => {
 
 // ---------------------------------------------------------------- defaults
 test('DEFAULTS has the contract shape and is frozen', () => {
-  assert.equal(DEFAULTS.version, 1);
-  assert.equal(SETTINGS_VERSION, 1);
+  assert.equal(DEFAULTS.version, 2);
+  assert.equal(SETTINGS_VERSION, 2);
   assert.equal(DEFAULTS.sfxVolume, 0.8);
   assert.equal(DEFAULTS.musicVolume, 0.45);
   assert.equal(DEFAULTS.announcerVolume, 0.9);
   assert.equal(DEFAULTS.quality, 'auto');
   assert.equal(DEFAULTS.cameraShake, 1);
-  assert.deepEqual(plain(DEFAULTS.keys.shoot), ['KeyJ', 'Space']);
+  // contract 1: mouse primaries, keyboard alternates
+  assert.deepEqual(plain(DEFAULTS.keys.shoot), ['Mouse0', 'Space']);
+  assert.deepEqual(plain(DEFAULTS.keys.pass), ['Mouse2', 'KeyK']);
+  assert.deepEqual(plain(DEFAULTS.keys.action), ['KeyL']);
   assert.deepEqual(plain(DEFAULTS.keys.turbo), ['ShiftLeft', 'ShiftRight']);
+  assert.deepEqual(plain(DEFAULTS.keys.up), ['KeyW', 'ArrowUp']);
+  assert.deepEqual(plain(DEFAULTS.keys.down), ['KeyS', 'ArrowDown']);
+  assert.deepEqual(plain(DEFAULTS.keys.left), ['KeyA', 'ArrowLeft']);
+  assert.deepEqual(plain(DEFAULTS.keys.right), ['KeyD', 'ArrowRight']);
   assert.equal(DEFAULTS.name, '');
   assert.deepEqual(Object.keys(DEFAULTS.keys), ACTIONS.slice());
   assert.ok(Object.isFrozen(DEFAULTS) && Object.isFrozen(DEFAULTS.keys) && Object.isFrozen(DEFAULTS.keys.up));
   noDupes(DEFAULTS.keys);
-  assert.equal(GAMEPAD_LAYOUT.length, 5);
+  assert.equal(GAMEPAD_LAYOUT.length, 6);
+  assert.deepEqual(GAMEPAD_LAYOUT.map((g) => g.label), ['Skate', 'Shoot \u00b7 check', 'Pass \u00b7 switch', 'Deke \u00b7 poke', 'Turbo', 'Menu, or join on a spare pad']);
+  assert.deepEqual(plain(MOUSE_CODES), ['Mouse0', 'Mouse1', 'Mouse2']);
+});
+
+test('labels are sentence case (no all-caps words beyond key names)', () => {
+  for (const a of ACTIONS) {
+    const l = ACTION_LABELS[a];
+    assert.equal(l[0], l[0].toUpperCase(), `${a} starts upper case`);
+    assert.equal(l.slice(1), l.slice(1).toLowerCase(), `${a} rest lower case`);
+  }
+  for (const g of GAMEPAD_LAYOUT) assert.equal(g.label.slice(1), g.label.slice(1).toLowerCase(), g.label);
 });
 
 test('fresh store returns DEFAULTS; get/all return copies', () => {
   const s = createSettings({ storage: null });
   assert.deepEqual(s.all(), plain(DEFAULTS));
   assert.equal(s.get('sfxVolume'), 0.8);
-  assert.equal(s.get('version'), 1);
+  assert.equal(s.get('version'), 2);
   assert.equal(s.get('nope'), undefined);
   assert.equal(s.get(), undefined);
   const k = s.get('keys');
@@ -121,7 +139,7 @@ test('booleans, quality enum, name sanitizing', () => {
   const emoji = 'A'.repeat(15) + '\u{1F3D2}';       // hockey emoji = 2 UTF-16 units
   assert.equal(s.set('name', emoji), 'A'.repeat(15), 'no dangling surrogate');
   assert.equal(s.set('version', 9), undefined);
-  assert.equal(s.get('version'), 1);
+  assert.equal(s.get('version'), 2);
   assert.equal(s.set('bogus', 1), undefined);
   assert.equal('bogus' in s.all(), false);
 });
@@ -132,6 +150,14 @@ test('keys: validation, max 2 slots, reserved Escape, partial merge, conflicts r
   assert.equal(isBindableCode('Escape'), false);
   assert.equal(isBindableCode('bad code'), false);
   assert.equal(isBindableCode(''), false);
+  for (const c of ['Mouse0', 'Mouse1', 'Mouse2']) assert.equal(isBindableCode(c), true, c);
+  for (const c of ['Mouse3', 'Mouse4', 'Mouse10', 'Mouse']) assert.equal(isBindableCode(c), c === 'Mouse', c);
+  assert.equal(isMouseCode('Mouse2'), true);
+  assert.equal(isMouseCode('KeyM'), false);
+  // mouse codes survive validation like keys; back/forward buttons are dropped
+  s.set('keys', { action: ['Mouse1', 'Mouse4'] });
+  assert.deepEqual(s.get('keys').action, ['Mouse1']);
+  assert.equal(s.keyFor('Mouse1'), 'action');
   // partial update: only shoot replaced, invalid entries dropped, capped to 2
   s.set('keys', { shoot: ['KeyZ', 'Escape', 'nope!', 7, 'KeyZ', 'KeyX', 'KeyC'] });
   assert.deepEqual(s.get('keys').shoot, ['KeyZ', 'KeyX']);
@@ -171,7 +197,7 @@ test('sanitizeKeys: primaries beat alternates; stolen actions fall back to defau
 // ---------------------------------------------------------------- load validation
 test('load: garbage fields are validated, unknown keys dropped, missing keys defaulted', () => {
   const json = JSON.stringify({
-    version: 1, sfxVolume: 9, musicVolume: 'x', announcerVolume: -1, quality: 'ultra', showNames: 'yes',
+    version: 2, sfxVolume: 9, musicVolume: 'x', announcerVolume: -1, quality: 'ultra', showNames: 'yes',
     muted: 1, cameraShake: '0.5', name: 'Tester', extra: { evil: true },
     keys: { up: ['KeyW', 'KeyW', 'Escape', 'bad code', 5], shoot: 'KeyZ', bogusAction: ['KeyQ'] },
   }).replace(/^\{/, '{"__proto__":{"polluted":1},');
@@ -213,12 +239,13 @@ test('persistence round trip with a fake storage', () => {
   s1.set('name', 'Riot');
   s1.set('keys', rebindKeys(s1.get('keys'), 'shoot', 0, 'KeyK').keys);
   const stored = JSON.parse(storage.getItem(STORAGE_KEY));
-  assert.equal(stored.version, 1);
+  assert.equal(stored.version, 2);
   assert.equal(stored.sfxVolume, 0.3);
   const s2 = createSettings({ storage });
   assert.deepEqual(s2.all(), s1.all());
   assert.equal(s2.keyFor('KeyK'), 'shoot');
-  assert.equal(s2.keyFor('KeyJ'), 'pass');
+  assert.equal(s2.keyFor('Mouse0'), 'pass', 'K came from pass, so pass took left click');
+  assert.deepEqual(s2.get('keys').pass, ['Mouse2', 'Mouse0']);
   // unchanged set() does not write
   const w = storage.writes;
   s2.set('sfxVolume', 0.3);
@@ -322,18 +349,22 @@ test('subscribe: unsubscribing during an emit is safe; reset emits once per chan
 });
 
 // ---------------------------------------------------------------- keyFor
-test('keyFor maps KeyboardEvent.code to an action', () => {
+test('keyFor maps KeyboardEvent.code and mouse codes to an action', () => {
   const s = createSettings({ storage: null });
   const expect = {
     KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down', KeyA: 'left', ArrowLeft: 'left',
-    KeyD: 'right', ArrowRight: 'right', KeyJ: 'shoot', Space: 'shoot', KeyK: 'pass', KeyL: 'action',
+    KeyD: 'right', ArrowRight: 'right', Mouse0: 'shoot', Space: 'shoot', Mouse2: 'pass', KeyK: 'pass', KeyL: 'action',
     ShiftLeft: 'turbo', ShiftRight: 'turbo',
   };
   for (const [code, action] of Object.entries(expect)) assert.equal(s.keyFor(code), action, code);
-  for (const code of ['KeyQ', 'Escape', '', undefined, null, 5, 'keyw']) assert.equal(s.keyFor(code), null);
-  s.set('keys', rebindKeys(s.get('keys'), 'turbo', 0, 'KeyJ').keys);
-  assert.equal(s.keyFor('KeyJ'), 'turbo');
+  for (const code of ['KeyJ', 'Mouse1', 'Mouse3', 'KeyQ', 'Escape', '', undefined, null, 5, 'keyw', 'mouse0']) assert.equal(s.keyFor(code), null, String(code));
+  s.set('keys', rebindKeys(s.get('keys'), 'turbo', 0, 'Mouse0').keys);
+  assert.equal(s.keyFor('Mouse0'), 'turbo');
   assert.equal(s.keyFor('ShiftLeft'), 'shoot');
+  s.set('keys', rebindKeys(s.get('keys'), 'action', 1, 'Mouse1').keys);
+  assert.equal(s.keyFor('Mouse1'), 'action');
+  s.set('keys', rebindKeys(s.get('keys'), 'turbo', 1, 'KeyJ').keys);
+  assert.equal(s.keyFor('KeyJ'), 'turbo');
 });
 
 // ---------------------------------------------------------------- rebindKeys
@@ -344,29 +375,39 @@ test('rebindKeys: free key binds, nothing else moves', () => {
   assert.deepEqual(r.keys.shoot, ['KeyZ', 'Space']);
   assert.deepEqual(r.unbound, []);
   const r2 = rebindKeys(DEFAULTS.keys, 'pass', 1, 'KeyP');
-  assert.deepEqual(r2.keys.pass, ['KeyK', 'KeyP']);
+  assert.deepEqual(r2.keys.pass, ['Mouse2', 'KeyP']);
+  const r3 = rebindKeys(DEFAULTS.keys, 'action', 1, 'Mouse1');
+  assert.deepEqual(r3.keys.action, ['KeyL', 'Mouse1']);
+  assert.equal(r3.swap, null);
 });
 
 test('rebindKeys: conflict swaps the displaced key onto the other action', () => {
   const r = rebindKeys(DEFAULTS.keys, 'shoot', 0, 'KeyK');
   assert.equal(r.changed, true);
   assert.deepEqual(r.keys.shoot, ['KeyK', 'Space']);
-  assert.deepEqual(r.keys.pass, ['KeyJ']);
-  assert.deepEqual(r.swap, { action: 'pass', slot: 0, code: 'KeyJ' });
+  assert.deepEqual(r.keys.pass, ['Mouse2', 'Mouse0']);
+  assert.deepEqual(r.swap, { action: 'pass', slot: 1, code: 'Mouse0' });
   noDupes(r.keys);
   const r2 = rebindKeys(DEFAULTS.keys, 'up', 1, 'ArrowDown');
   assert.deepEqual(r2.keys.up, ['KeyW', 'ArrowDown']);
   assert.deepEqual(r2.keys.down, ['KeyS', 'ArrowUp']);
   assert.deepEqual(r2.swap, { action: 'down', slot: 1, code: 'ArrowUp' });
+  // mouse buttons swap like keys
+  const r3 = rebindKeys(DEFAULTS.keys, 'shoot', 0, 'Mouse2');
+  assert.deepEqual(r3.keys.shoot, ['Mouse2', 'Space']);
+  assert.deepEqual(r3.keys.pass, ['Mouse0', 'KeyK']);
+  assert.deepEqual(r3.swap, { action: 'pass', slot: 0, code: 'Mouse0' });
+  noDupes(r3.keys);
 });
 
 test('rebindKeys: binding into an empty slot steals the key (other action may become unbound)', () => {
-  const r = rebindKeys(DEFAULTS.keys, 'pass', 1, 'Space');
-  assert.deepEqual(r.keys.pass, ['KeyK', 'Space']);
-  assert.deepEqual(r.keys.shoot, ['KeyJ']);
+  const r = rebindKeys(DEFAULTS.keys, 'action', 1, 'Space');
+  assert.deepEqual(r.keys.action, ['KeyL', 'Space']);
+  assert.deepEqual(r.keys.shoot, ['Mouse0']);
   assert.deepEqual(r.swap, { action: 'shoot', slot: 1, code: null });
   assert.deepEqual(r.unbound, []);
-  const r2 = rebindKeys(DEFAULTS.keys, 'action', 1, 'KeyK');
+  const onlyK = { ...plain(DEFAULTS.keys), pass: ['KeyK'] };
+  const r2 = rebindKeys(onlyK, 'action', 1, 'KeyK');
   assert.deepEqual(r2.keys.action, ['KeyL', 'KeyK']);
   assert.deepEqual(r2.keys.pass, []);
   assert.deepEqual(r2.unbound, ['pass']);
@@ -377,9 +418,12 @@ test('rebindKeys: same action other slot swaps primary/alternate', () => {
   const r = rebindKeys(DEFAULTS.keys, 'up', 0, 'ArrowUp');
   assert.deepEqual(r.keys.up, ['ArrowUp', 'KeyW']);
   assert.deepEqual(r.swap, { action: 'up', slot: 1, code: 'KeyW' });
-  const one = rebindKeys(DEFAULTS.keys, 'pass', 1, 'KeyK');
+  const p = rebindKeys(DEFAULTS.keys, 'pass', 0, 'KeyK');
+  assert.deepEqual(p.keys.pass, ['KeyK', 'Mouse2']);
+  assert.deepEqual(p.swap, { action: 'pass', slot: 1, code: 'Mouse2' });
+  const one = rebindKeys(DEFAULTS.keys, 'action', 1, 'KeyL');
   assert.equal(one.changed, false, 'moving the only key into the empty slot is a no-op');
-  assert.deepEqual(one.keys.pass, ['KeyK']);
+  assert.deepEqual(one.keys.action, ['KeyL']);
 });
 
 test('rebindKeys: no-ops, errors, clearing, purity', () => {
@@ -396,7 +440,10 @@ test('rebindKeys: no-ops, errors, clearing, purity', () => {
   const cleared = rebindKeys(input, 'up', 0, null);
   assert.equal(cleared.changed, true);
   assert.deepEqual(cleared.keys.up, ['ArrowUp']);
-  assert.equal(rebindKeys(input, 'pass', 1, null).changed, false, 'clearing an empty slot');
+  assert.equal(rebindKeys(input, 'action', 1, null).changed, false, 'clearing an empty slot');
+  assert.equal(rebindKeys(input, 'action', 1, 'Mouse3').error, 'invalid', 'back button is not bindable');
+  const clearedMouse = rebindKeys(input, 'shoot', 0, null);
+  assert.deepEqual(clearedMouse.keys.shoot, ['Space']);
   const both = rebindKeys(rebindKeys(input, 'pass', 0, null).keys, 'pass', 0, null);
   assert.deepEqual(both.keys.pass, []);
   assert.deepEqual(both.unbound, ['pass']);
@@ -411,7 +458,8 @@ test('rebindKeys: random sequences never produce duplicate bindings', () => {
   let seed = 1234567;
   const rnd = (n) => { seed = (seed * 1103515245 + 12345) >>> 0; return (seed >>> 8) % n; };
   const pool = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyJ', 'KeyK', 'KeyL', 'Space', 'ShiftLeft', 'ShiftRight',
-    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyQ', 'KeyE', 'Digit1', 'Numpad0', null, 'Escape'];
+    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyQ', 'KeyE', 'Digit1', 'Numpad0', null, 'Escape',
+    'Mouse0', 'Mouse1', 'Mouse2', 'Mouse3'];
   let keys = plain(DEFAULTS.keys);
   for (let i = 0; i < 3000; i++) {
     const r = rebindKeys(keys, ACTIONS[rnd(ACTIONS.length)], rnd(2), pool[rnd(pool.length)]);
@@ -432,9 +480,9 @@ const V0 = {
   bindings: { shoot: 'KeyZ', pass: 'Space', turbo: 'Escape', up: 'KeyI' },
 };
 
-test('migrate: v0 object -> v1 shape', () => {
+test('migrate: v0 object -> current shape', () => {
   const m = migrate(V0);
-  assert.equal(m.version, 1);
+  assert.equal(m.version, 2);
   assert.equal(m.sfxVolume, 0.4);
   assert.equal(m.musicVolume, 0.5);
   assert.equal(m.announcerVolume, 0.3);
@@ -445,13 +493,13 @@ test('migrate: v0 object -> v1 shape', () => {
   assert.equal(m.showTutorial, false);
   assert.equal(m.reduceFlashes, true);
   assert.ok(!('volume' in m) && !('bindings' in m) && !('gfx' in m));
-  assert.deepEqual(migrate(null), { version: 1 });
-  assert.deepEqual(migrate([1]), { version: 1 });
+  assert.deepEqual(migrate(null), { version: 2 });
+  assert.deepEqual(migrate([1]), { version: 2 });
 });
 
-test('sanitizeSettings: v0 -> complete valid v1', () => {
+test('sanitizeSettings: v0 -> complete valid current version', () => {
   const s = sanitizeSettings(V0);
-  assert.equal(s.version, 1);
+  assert.equal(s.version, 2);
   assert.equal(s.name, 'Goon');
   assert.deepEqual(s.keys.shoot, ['KeyZ'], 'Space went to pass (primary beats the alternate)');
   assert.deepEqual(s.keys.pass, ['Space']);
@@ -462,13 +510,100 @@ test('sanitizeSettings: v0 -> complete valid v1', () => {
   noDupes(s.keys);
 });
 
+test('sanitizeSettings: v0 with the old default bindings lands on the mouse defaults', () => {
+  const s = sanitizeSettings({ bindings: { shoot: 'KeyJ', pass: 'KeyK', action: 'KeyL' } });
+  assert.deepEqual(s.keys.shoot, ['Mouse0', 'Space']);
+  assert.deepEqual(s.keys.pass, ['Mouse2', 'KeyK']);
+  assert.deepEqual(s.keys.action, ['KeyL']);
+  noDupes(s.keys);
+});
+
+// ---------------------------------------------------------------- v1 -> v2 (mouse controls)
+const V1_DEFAULT_KEYS = {
+  up: ['KeyW', 'ArrowUp'], down: ['KeyS', 'ArrowDown'], left: ['KeyA', 'ArrowLeft'], right: ['KeyD', 'ArrowRight'],
+  shoot: ['KeyJ', 'Space'], pass: ['KeyK'], action: ['KeyL'], turbo: ['ShiftLeft', 'ShiftRight'],
+};
+const v1 = (keys, extra = {}) => ({ version: 1, sfxVolume: 0.5, quality: 'high', name: 'Blade', keys, ...extra });
+
+test('v1 -> v2: untouched v1 defaults move to the mouse defaults', () => {
+  const s = sanitizeSettings(v1(V1_DEFAULT_KEYS));
+  assert.equal(s.version, 2);
+  assert.deepEqual(s.keys, plain(DEFAULTS.keys));
+  assert.equal(s.sfxVolume, 0.5);
+  assert.equal(s.quality, 'high');
+  assert.equal(s.name, 'Blade');
+});
+
+test('v1 -> v2: customised shoot / pass are kept, each migrates on its own', () => {
+  // custom shoot, default pass
+  let s = sanitizeSettings(v1({ ...V1_DEFAULT_KEYS, shoot: ['KeyZ', 'Space'] }));
+  assert.deepEqual(s.keys.shoot, ['KeyZ', 'Space']);
+  assert.deepEqual(s.keys.pass, ['Mouse2', 'KeyK']);
+  // default shoot, custom pass
+  s = sanitizeSettings(v1({ ...V1_DEFAULT_KEYS, pass: ['KeyP'] }));
+  assert.deepEqual(s.keys.shoot, ['Mouse0', 'Space']);
+  assert.deepEqual(s.keys.pass, ['KeyP']);
+  // same keys, different order = customised
+  s = sanitizeSettings(v1({ ...V1_DEFAULT_KEYS, shoot: ['Space', 'KeyJ'] }));
+  assert.deepEqual(s.keys.shoot, ['Space', 'KeyJ']);
+  // a cleared alternate is a customisation too
+  s = sanitizeSettings(v1({ ...V1_DEFAULT_KEYS, shoot: ['KeyJ'] }));
+  assert.deepEqual(s.keys.shoot, ['KeyJ']);
+  assert.deepEqual(s.keys.pass, ['Mouse2', 'KeyK']);
+  // pass with an extra alternate is customised
+  s = sanitizeSettings(v1({ ...V1_DEFAULT_KEYS, pass: ['KeyK', 'KeyP'] }));
+  assert.deepEqual(s.keys.pass, ['KeyK', 'KeyP']);
+  // other customisations ride along untouched
+  s = sanitizeSettings(v1({ ...V1_DEFAULT_KEYS, turbo: ['KeyQ'], up: ['KeyI', 'ArrowUp'] }));
+  assert.deepEqual(s.keys.turbo, ['KeyQ']);
+  assert.deepEqual(s.keys.up, ['KeyI', 'ArrowUp']);
+  assert.deepEqual(s.keys.shoot, ['Mouse0', 'Space']);
+  noDupes(s.keys);
+});
+
+test('v1 -> v2: missing or partial key maps get the new defaults; junk is tolerated', () => {
+  let s = sanitizeSettings({ version: 1, musicVolume: 0.2 });
+  assert.deepEqual(s.keys, plain(DEFAULTS.keys));
+  assert.equal(s.musicVolume, 0.2);
+  s = sanitizeSettings({ version: 1, keys: { turbo: ['KeyQ'] } });
+  assert.deepEqual(s.keys.shoot, ['Mouse0', 'Space']);
+  assert.deepEqual(s.keys.pass, ['Mouse2', 'KeyK']);
+  assert.deepEqual(s.keys.turbo, ['KeyQ']);
+  for (const keys of [null, 'KeyJ', ['KeyJ'], 7, { shoot: 'KeyJ' }]) {
+    const r = sanitizeSettings({ version: 1, keys });
+    noDupes(r.keys);
+    assert.equal(r.version, 2);
+  }
+});
+
+test('v1 -> v2 via storage: rewritten as v2 on load, customised bindings kept', () => {
+  const storage = new FakeStorage({ [STORAGE_KEY]: JSON.stringify(v1(V1_DEFAULT_KEYS)) });
+  const s = createSettings({ storage });
+  assert.equal(s.keyFor('Mouse0'), 'shoot');
+  assert.equal(s.keyFor('Mouse2'), 'pass');
+  assert.equal(s.keyFor('KeyJ'), null);
+  const stored = JSON.parse(storage.getItem(STORAGE_KEY));
+  assert.equal(stored.version, 2);
+  assert.deepEqual(stored.keys.shoot, ['Mouse0', 'Space']);
+  // loading again does not migrate twice: a v2 user who deliberately rebinds shoot to J + Space keeps it
+  s.set('keys', { shoot: ['KeyJ', 'Space'] });
+  const again = createSettings({ storage });
+  assert.deepEqual(again.get('keys').shoot, ['KeyJ', 'Space']);
+  // a customised v1 save
+  const custom = new FakeStorage({ [STORAGE_KEY]: JSON.stringify(v1({ ...V1_DEFAULT_KEYS, shoot: ['KeyZ', 'Space'], pass: ['KeyX'] })) });
+  const c = createSettings({ storage: custom });
+  assert.deepEqual(c.get('keys').shoot, ['KeyZ', 'Space']);
+  assert.deepEqual(c.get('keys').pass, ['KeyX']);
+  assert.equal(JSON.parse(custom.getItem(STORAGE_KEY)).version, 2);
+});
+
 test('migration via storage: v0 is upgraded and written back; v1 fields in a v0 object survive', () => {
   const storage = new FakeStorage({ [STORAGE_KEY]: JSON.stringify(V0) });
   const s = createSettings({ storage });
   assert.equal(s.get('quality'), 'low');
   assert.equal(s.get('sfxVolume'), 0.4);
   const stored = JSON.parse(storage.getItem(STORAGE_KEY));
-  assert.equal(stored.version, 1);
+  assert.equal(stored.version, 2);
   assert.equal(stored.sfxVolume, 0.4);
   assert.ok(!('bindings' in stored));
   // explicit version 0 with some v1 fields already present
@@ -482,11 +617,11 @@ test('migration via storage: v0 is upgraded and written back; v1 fields in a v0 
 });
 
 test('a save from a newer version is read best-effort and not overwritten on load', () => {
-  const future = JSON.stringify({ version: 2, sfxVolume: 0.5, newThing: 'x' });
+  const future = JSON.stringify({ version: 3, sfxVolume: 0.5, newThing: 'x' });
   const storage = new FakeStorage({ [STORAGE_KEY]: future });
   const s = createSettings({ storage });
   assert.equal(s.get('sfxVolume'), 0.5);
-  assert.equal(s.get('version'), 1);
+  assert.equal(s.get('version'), 2);
   assert.equal(storage.getItem(STORAGE_KEY), future);
 });
 
@@ -504,6 +639,14 @@ test('keyLabel', () => {
   assert.equal(keyLabel('MediaPlayPause'), 'Media Play Pause');
   assert.equal(keyLabel(undefined), '\u2014');
   assert.equal(keyLabel(null, true), 'none');
+  // contract 1
+  assert.equal(keyLabel('Mouse0'), 'Left click');
+  assert.equal(keyLabel('Mouse1'), 'Middle click');
+  assert.equal(keyLabel('Mouse2'), 'Right click');
+  assert.equal(keyLabel('Mouse0', true), 'Left click');
+  assert.equal(keyLabel('KeyJ'), 'J');
+  assert.equal(keyLabel('ShiftRight'), 'R-Shift');
+  assert.deepEqual(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].map((c) => keyLabel(c)), ['\u2191', '\u2193', '\u2190', '\u2192']);
 });
 
 // ---------------------------------------------------------------- report

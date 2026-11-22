@@ -2,16 +2,20 @@
 // Every body segment of every player is one instance of a per-segment InstancedMesh whose
 // vertices carry a palette "slot" (primary / secondary / accent / skin / fixed). Team colors are
 // per-instance attributes, so all 8 players draw in ~17 calls (plus the same again for the ice
-// reflection, which shares the instance buffers). Arms + legs are solved with 2-bone IK every frame.
+// reflection, which shares the instance buffers). Once render/skater-models.js and render/goalie-models.js
+// have loaded, the animated models replace these. Arms + legs are solved with 2-bone IK every frame.
 import * as THREE from 'three';
 import { TEAMS, PSTATE, PHASE } from '/shared/constants.js';
 import { PartBuilder, lin, smoothstep, clamp01 } from './util.js';
-import { makeCanvas, canvasTex, drawNumberAtlas, makeNameTag, makeRingTexture, makeRadialTexture, makeToughIcon } from './textures.js';
+import { makeCanvas, canvasTex, drawNumberAtlas, makeRingTexture, makeRadialTexture } from './textures.js';
 import { FIGHT_TRIGGER } from '/shared/fight.js';
 import { createSkaterModels } from './skater-models.js';
+import { createGoalieModels } from './goalie-models.js';
+import { createHeadTags, TAG, SLOT_COLORS } from './head-tags.js';
 
 // "Tough guys" (checking >= this) are the only skaters who can start a fight; they get a fist badge.
 const TOUGH_CHK = (FIGHT_TRIGGER && FIGHT_TRIGGER.minChk) || 6;
+const EMPTY_NAMES = Object.freeze({});
 
 const K = 0, P = 1, S = 2, A = 3, SKIN = 4;
 
@@ -25,10 +29,11 @@ const DIM_S = { ua: 0.30, la: 0.31, th: 0.45, sh: 0.45, ankle: 0.19, hipW: 0.12,
 const DIM_G = { ua: 0.31, la: 0.31, th: 0.45, sh: 0.45, ankle: 0.19, hipW: 0.16, shY: 0.47, shZ: 0.31, spineY: 0.10, grip1: 1.2, grip2: 0.80, headY: 0.71 };
 
 const SKIN_TONES = [0xf1c7a5, 0xd9a07a, 0xa8714c, 0x6e4529, 0xe8b893, 0x8d5a3b, 0xf5d2b8, 0xc48a5e];
-// marker colors for local players: [0] = ctx.myId, then couch co-op players in ctx.couchIds order
-const LOCAL_COLORS = [0xffe14a, 0x46f0ff, 0xff5ad8, 0x8dff4a, 0xff9a3c];
+// slot colors for local players (--slot-1..4): [0] = ctx.myId (P1), then couch co-op players in
+// ctx.couchIds order. The head-indicator plates and the floor rings use the same values.
+const LOCAL_COLORS = SLOT_COLORS;
 
-/** Index of a local player's marker color: 0 for myId, 1.. for couch ids, -1 if not local. */
+/** Local slot of a client: 0 for myId (P1), 1.. for couch ids (P2..), -1 if not local. */
 function localIndex(c, myId, couch) {
   if (!c) return -1;
   if (c === myId) return 0;
@@ -36,9 +41,9 @@ function localIndex(c, myId, couch) {
   let i = 1;
   if (typeof couch.has === 'function') {
     if (!couch.has(c)) return -1;
-    for (const id of couch) { if (id === c) return Math.min(i, LOCAL_COLORS.length - 1); if (id !== myId) i++; }
+    for (const id of couch) { if (id === c) return i; if (id !== myId) i++; }
   } else if (Array.isArray(couch)) {
-    for (const id of couch) { if (id === c) return Math.min(i, LOCAL_COLORS.length - 1); if (id !== myId) i++; }
+    for (const id of couch) { if (id === c) return i; if (id !== myId) i++; }
   }
   return -1;
 }
@@ -314,23 +319,12 @@ export function createPlayers(scene, mirror, fx, track) {
   // markers
   const ringTex = track(makeRingTexture(false)), ringTexLocal = track(makeRingTexture(true));
   const glowTex = track(makeRadialTexture());
-  const toughTex = track(makeToughIcon());
-  const toughMat = new THREE.SpriteMaterial({ map: toughTex, depthTest: false, depthWrite: false, transparent: true, toneMapped: false });
   const shadowTex = track(makeRadialTexture([[0, 'rgba(255,255,255,0.75)'], [0.55, 'rgba(255,255,255,0.35)'], [1, 'rgba(255,255,255,0)']], 64));
   const ringGeo = new THREE.PlaneGeometry(1.7, 1.7); ringGeo.rotateX(-Math.PI / 2);
   const glowGeo = new THREE.PlaneGeometry(2.6, 2.6); glowGeo.rotateX(-Math.PI / 2);
-  // local-player markers (always on top): one per local player on this PC (ctx.myId + ctx.couchIds)
-  const arrowOutMat = new THREE.MeshBasicMaterial({ color: 0x111111, depthTest: false, depthWrite: false, transparent: true, toneMapped: false });
-  const arrowGeo = new THREE.ConeGeometry(0.2, 0.42, 4); arrowGeo.rotateX(Math.PI);
-  const arrows = [];
-  for (let i = 0; i < LOCAL_COLORS.length; i++) {
-    const a = new THREE.Mesh(arrowGeo, new THREE.MeshBasicMaterial({ color: LOCAL_COLORS[i], depthTest: false, depthWrite: false, transparent: true, toneMapped: false }));
-    a.renderOrder = 51;
-    const o = new THREE.Mesh(arrowGeo, arrowOutMat); o.renderOrder = 50; o.scale.set(1.35, 1.25, 1.35);
-    a.visible = o.visible = false;
-    group.add(o, a);
-    arrows.push({ a, o });
-  }
+  // head indicators (name, turbo, slap charge, on fire, tough-guy fist): screen-space plates drawn by
+  // render/head-tags.js in their own pass after the scene (renderTags below)
+  const tags = createHeadTags();
 
   // blob shadows (8 players + puck)
   const blobGeo = new THREE.PlaneGeometry(1, 1); blobGeo.rotateX(-Math.PI / 2);
@@ -339,14 +333,6 @@ export function createPlayers(scene, mirror, fx, track) {
   blobs.frustumCulled = false; blobs.renderOrder = 1;
   blobs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   group.add(blobs);
-
-  const tagCache = new Map();
-  function tagTexture(name, team, localColor) {
-    const key = `${name}|${team}|${localColor ?? '-'}`;
-    let t = tagCache.get(key);
-    if (!t) { t = makeNameTag(name, (TEAMS[team] || TEAMS[0]).colors.primary, localColor); tagCache.set(key, t); }
-    return t;
-  }
 
   // per-player visual state
   const pvs = [];
@@ -359,19 +345,17 @@ export function createPlayers(scene, mirror, fx, track) {
       bladeW: new THREE.Vector3(), headW: new THREE.Vector3(), rootW: new THREE.Vector3(),
       stride: id * 1.7, handle: id, turn: 0, prevF: null, prevSpeed: 0, lastS: -1, recover: 0,
       saveSide: 1, saveHigh: 0, saveMode: 0, spin: 0, sprayCd: 0, fireAcc: 0, inited: false, visible: false,
-      ring: null, tag: null, chargeGlow: null, fireGlow: null, tagKey: '', tough: null, isTough: false,
+      ring: null, chargeGlow: null, fireGlow: null, isTough: false,
+      tagC: -1, tagRaw: undefined, tagName: '', // human display name cache (no per-frame strings)
     };
-    pv.tough = new THREE.Sprite(toughMat); pv.tough.scale.set(0.46, 0.46, 1); pv.tough.renderOrder = 41; pv.tough.visible = false;
     const ringMat = new THREE.MeshBasicMaterial({ map: ringTex, transparent: true, depthWrite: false, toneMapped: false, opacity: 0.95 });
     pv.ring = new THREE.Mesh(ringGeo, ringMat); pv.ring.renderOrder = 3; pv.ring.visible = false;
-    const tagMat = new THREE.SpriteMaterial({ map: null, depthTest: false, depthWrite: false, transparent: true, toneMapped: false });
-    pv.tag = new THREE.Sprite(tagMat); pv.tag.scale.set(1.7, 0.425, 1); pv.tag.renderOrder = 40; pv.tag.visible = false;
     // normal-blended colored halos: additive glows wash out to white over the bright ice
     const cgMat = new THREE.SpriteMaterial({ map: glowTex, color: 0xffaa33, depthWrite: false, transparent: true, toneMapped: false });
     pv.chargeGlow = new THREE.Sprite(cgMat); pv.chargeGlow.renderOrder = 6; pv.chargeGlow.visible = false;
     const fgMat = new THREE.MeshBasicMaterial({ map: glowTex, color: 0xff5a00, depthWrite: false, transparent: true, toneMapped: false });
     pv.fireGlow = new THREE.Mesh(glowGeo, fgMat); pv.fireGlow.renderOrder = 2; pv.fireGlow.visible = false;
-    group.add(pv.ring, pv.tag, pv.chargeGlow, pv.fireGlow, pv.tough);
+    group.add(pv.ring, pv.chargeGlow, pv.fireGlow);
     pvs.push(pv);
   }
   // owners for color assignment
@@ -387,22 +371,27 @@ export function createPlayers(scene, mirror, fx, track) {
     }
   }
 
-  // Skaters: the animated player model once it has loaded (render/skater-models.js); until then, or
-  // if it can't load, the procedural skaters below. Goalies are always procedural.
-  const models = createSkaterModels(group, mirror, track, SKIN_TONES);
-  models.load().then(() => {
-    // stop drawing the procedural skaters
-    for (const pt of parts) for (let i = 0; i < pt.count; i++) { const o = pt.owner[i]; if (o >= 0 && o % 4 !== 3) pt.mesh.setMatrixAt(i, _zero); }
-    for (const id of [0, 1, 2, 4, 5, 6]) numMesh.setMatrixAt(id, _zero);
+  // Skaters and goalies: the animated player models once they have loaded (render/skater-models.js,
+  // render/goalie-models.js); until then, or if one can't load, the procedural players below.
+  function dropProcedural(goalie) {
+    for (const pt of parts) for (let i = 0; i < pt.count; i++) { const o = pt.owner[i]; if (o >= 0 && (o % 4 === 3) === goalie) pt.mesh.setMatrixAt(i, _zero); }
+    for (const id of goalie ? [3, 7] : [0, 1, 2, 4, 5, 6]) numMesh.setMatrixAt(id, _zero);
     for (const pt of parts) pt.mesh.instanceMatrix.needsUpdate = true;
     numMesh.instanceMatrix.needsUpdate = true;
-  }).catch((e) => console.warn('ICE RIOT: skater models unavailable, using the procedural skaters.', e));
+  }
+  const models = createSkaterModels(group, mirror, track, SKIN_TONES);
+  models.load().then(() => dropProcedural(false))
+    .catch((e) => console.warn('ICE RIOT: skater models unavailable, using the procedural skaters.', e));
+  const goalies = createGoalieModels(group, mirror, track, SKIN_TONES);
+  goalies.load().then(() => dropProcedural(true))
+    .catch((e) => console.warn('ICE RIOT: goalie models unavailable, using the procedural goalies.', e));
 
   let teamsCur = [0, 1];
   const tmpc = [0, 0, 0];
   function setTeams(h, a) {
     teamsCur = [h, a];
     models.setTeams(h, a);
+    goalies.setTeams(h, a);
     for (const pt of parts) {
       const aP = pt.geo.attributes.iP.array, aS = pt.geo.attributes.iS.array, aA = pt.geo.attributes.iA.array, aK = pt.geo.attributes.iK.array;
       for (let i = 0; i < pt.count; i++) {
@@ -425,7 +414,6 @@ export function createPlayers(scene, mirror, fx, track) {
     }
     drawNumberAtlas(atlasCanvas, teamsCur, atlasNums);
     atlasTex.needsUpdate = true;
-    for (const pv of pvs) pv.tagKey = '';
   }
   setTeams(0, 1);
 
@@ -435,9 +423,10 @@ export function createPlayers(scene, mirror, fx, track) {
     numMesh.instanceMatrix.needsUpdate = true;
     for (let i = 0; i < 9; i++) blobs.setMatrixAt(i, _zero);
     blobs.instanceMatrix.needsUpdate = true;
-    for (const pv of pvs) { pv.ring.visible = pv.tag.visible = pv.chargeGlow.visible = pv.fireGlow.visible = pv.tough.visible = false; pv.visible = false; pv.inited = false; }
-    for (const ar of arrows) ar.a.visible = ar.o.visible = false;
+    for (const pv of pvs) { pv.ring.visible = pv.chargeGlow.visible = pv.fireGlow.visible = false; pv.visible = false; pv.inited = false; }
+    tags.hideAll();
     models.hideAll();
+    goalies.hideAll();
   }
 
   // ------------------------------------------------------------------ pose targets
@@ -645,10 +634,11 @@ export function createPlayers(scene, mirror, fx, track) {
     const k = state.k;
     const myId = ctx && ctx.myId;
     const couch = ctx && ctx.couchIds;
-    const names = (ctx && ctx.names) || {};
-    let arrowsUsed = 0;
+    const names = (ctx && ctx.names) || EMPTY_NAMES;
+    const showNames = !(ctx && ctx.showNames === false);
     // faceoff: on each team the skater nearest the puck takes the draw
     const takers = [-1, -1];
+    if (goalies.ready) goalies.tick(dt);
     if (models.ready) {
       models.tick(dt);
       if (state.ph === PHASE.FACEOFF && k) {
@@ -666,6 +656,7 @@ export function createPlayers(scene, mirror, fx, track) {
       const p = pl[id];
       if (!p) {
         if (pv.visible) hidePlayer(pv);
+        tags.entries[id].kind = TAG.NONE;
         continue;
       }
       pv.visible = true;
@@ -701,6 +692,15 @@ export function createPlayers(scene, mirror, fx, track) {
           console.warn('ICE RIOT: skater models failed, back to the procedural skaters.', e);
           models.disable();
         }
+      } else if (pv.isG && goalies.ready) {
+        try {
+          goalies.update(pv, p, { dt, k });
+          _fwd.set(Math.cos(f), 0, Math.sin(f));
+          modelled = true;
+        } catch (e) {
+          console.warn('ICE RIOT: goalie models failed, back to the procedural goalies.', e);
+          goalies.disable();
+        }
       }
       if (!modelled) evalRig(pv, p, time);
 
@@ -720,11 +720,11 @@ export function createPlayers(scene, mirror, fx, track) {
       }
       pv.prevSpeed = sp;
 
-      // name tag (every player) + human ring + tough-guy badge + local marker
+      // human ring on the ice (slot colour for players on this PC, team colour for remote humans)
       const human = p.c && p.c !== 0;
       const li = human ? localIndex(p.c, myId, couch) : -1; // local player on this PC (me or couch co-op)
       const isLocal = li >= 0;
-      const lc = isLocal ? LOCAL_COLORS[li] : null;
+      const lc = isLocal ? LOCAL_COLORS[Math.min(li, LOCAL_COLORS.length - 1)] : 0;
       const team = TEAMS[teamsCur[pv.team]] || TEAMS[0];
       const hx = pv.hips.elements[12], hz = pv.hips.elements[14];
       pv.ring.visible = !!human;
@@ -736,39 +736,37 @@ export function createPlayers(scene, mirror, fx, track) {
         pv.ring.scale.set(pulse, 1, pulse);
         if (isLocal) pv.ring.rotation.y = time * 1.5; else pv.ring.rotation.y = 0;
       }
-      let top = Math.max(pv.headW.y, 0.9) + 0.42;      // height of the next floating marker
-      const showTag = !(ctx && ctx.showNames === false);
-      if (showTag) {
+
+      // head indicator: local plate (always), remote-human tag, AI skater tag (names setting), fist
+      const charging = p.s === PSTATE.CHARGE;
+      const onFire = p.fire === 1 || p.fire === true;
+      const tg = tags.entries[id];
+      tg.kind = isLocal ? TAG.LOCAL
+        : (human || !pv.isG) && showNames ? (human ? TAG.REMOTE : TAG.AI)
+          : pv.isTough ? TAG.FIST : TAG.NONE;
+      tg.slot = isLocal ? li : 0;
+      tg.tough = pv.isTough;
+      if (human) {
+        const raw = names[p.c];
+        if (p.c !== pv.tagC || raw !== pv.tagRaw) {
+          pv.tagC = p.c; pv.tagRaw = raw;
+          pv.tagName = String(raw ?? `P${p.c}`).slice(0, 16);
+        }
+        tg.name = pv.tagName;
+      } else {
         const ros = pv.isG ? team.goalie : team.skaters[id % 4];
-        const name = human
-          ? String(names[p.c] ?? names[String(p.c)] ?? `P${p.c}`).slice(0, 16)
-          : String(ros ? ros.name : `#${p.n ?? ''}`).toUpperCase().slice(0, 16);
-        const key = `${name}|${teamsCur[pv.team]}|${lc ?? '-'}`;
-        if (pv.tagKey !== key) { pv.tag.material.map = tagTexture(name, teamsCur[pv.team], lc); pv.tag.material.needsUpdate = true; pv.tagKey = key; }
-        const s = human ? 1 : 0.8;                       // AI tags a bit smaller than human ones
-        pv.tag.scale.set(1.7 * s, 0.425 * s, 1);
-        pv.tag.material.opacity = human ? 1 : 0.85;
-        pv.tag.position.set(hx, top, hz);
-        pv.tag.visible = true;
-        top += 0.4;
-      } else pv.tag.visible = false;
-      pv.tough.visible = pv.isTough;
-      if (pv.isTough) {
-        const by = top + 0.06 + Math.sin(time * 3 + id) * 0.05;
-        pv.tough.position.set(hx, by, hz);
-        top = by + 0.3;
+        tg.name = ros ? ros.name : '';
       }
-      if (isLocal && arrowsUsed < arrows.length) {
-        const ar = arrows[arrowsUsed++];
-        ar.a.material.color.setHex(lc);
-        const ay = top + 0.2 + Math.sin(time * 5 + li) * 0.1;
-        ar.a.position.set(hx, ay, hz); ar.o.position.set(hx, ay + 0.02, hz);
-        ar.a.rotation.y = ar.o.rotation.y = time * 2;
-        ar.a.visible = ar.o.visible = true;
-      }
+      tg.num = atlasNums[id] ?? 0;
+      tg.team = team.colors.primary;
+      tg.tb = typeof p.tb === 'number' ? p.tb : 1;
+      tg.charging = charging;
+      tg.ch = charging ? (p.ch || 0) : 0;
+      tg.fire = onFire;
+      tg.anchor.copy(pv.headW);                          // top of the helmet (models and procedural rig)
 
       // slapshot charge glow
-      const ch = p.s === PSTATE.CHARGE ? (p.ch || 0) : 0;
+      const ch = charging ? (p.ch || 0) : 0;
       pv.chargeGlow.visible = ch > 0.02;
       if (ch > 0.02) {
         pv.chargeGlow.position.copy(pv.bladeW);
@@ -780,7 +778,6 @@ export function createPlayers(scene, mirror, fx, track) {
       }
 
       // ON FIRE
-      const onFire = p.fire === 1 || p.fire === true;
       pv.fireGlow.visible = onFire;
       if (onFire) {
         pv.fireGlow.position.set(hx, 0.03, hz);
@@ -797,7 +794,8 @@ export function createPlayers(scene, mirror, fx, track) {
         }
       }
     }
-    for (let i = arrowsUsed; i < arrows.length; i++) arrows[i].a.visible = arrows[i].o.visible = false;
+    // plates hide during instant replays, fights and the final screen
+    tags.update(dt, !!(state.replay || state.fi || state.ph === PHASE.GAME_OVER));
     for (const pt of parts) pt.mesh.instanceMatrix.needsUpdate = true;
     numMesh.instanceMatrix.needsUpdate = true;
     blobs.instanceMatrix.needsUpdate = true;
@@ -805,11 +803,12 @@ export function createPlayers(scene, mirror, fx, track) {
 
   function hidePlayer(pv) {
     pv.visible = false; pv.inited = false;
-    pv.ring.visible = pv.tag.visible = pv.chargeGlow.visible = pv.fireGlow.visible = pv.tough.visible = false;
+    pv.ring.visible = pv.chargeGlow.visible = pv.fireGlow.visible = false;
     for (const pt of parts) for (let i = 0; i < pt.count; i++) if (pt.owner[i] === pv.id) pt.mesh.setMatrixAt(i, _zero);
     numMesh.setMatrixAt(pv.id, _zero);
     blobs.setMatrixAt(pv.id, _zero);
     models.hide(pv.id);
+    goalies.hide(pv.id);
   }
 
   function setPuckShadow(x, z, y, visible) {
@@ -827,12 +826,30 @@ export function createPlayers(scene, mirror, fx, track) {
     group, pvs, setTeams, update, hideAll, setPuckShadow,
     setBlobOpacity(v) { blobMat.opacity = v; },
     bladeOf(id) { const pv = pvs[id]; return pv && pv.visible ? pv.bladeW : null; },
+    /**
+     * After update(): skip drawing, for this frame only, every modelled player whose hips are within
+     * `r` metres (on the ice) of x, z - a camera riding the puck through a goalie or past a shooter's
+     * skates would otherwise fill the screen with the inside of a jersey.
+     */
+    cullNear(x, z, r) {
+      for (const pv of pvs) {
+        if (!pv.visible) continue;
+        const dx = pv.hips.elements[12] - x, dz = pv.hips.elements[14] - z;
+        if (dx * dx + dz * dz > r * r) continue;
+        if (pv.isG) { if (goalies.ready) goalies.cull(pv.id); } else if (models.ready) models.cull(pv.id);
+      }
+    },
     headOf(id) { const pv = pvs[id]; return pv && pv.visible ? pv.headW : null; },
-    /** 'pass' / 'shot' events pick the skater models' pass and shot clips. */
-    onEvent(type, e) { models.onEvent(type, e); },
-    /** Video quality: 'low' drops the skater models' ice reflections. */
-    setQuality(q) { models.setReflections(q !== 'low'); },
-    get modelsReady() { return models.ready; },
-    dispose() { for (const t of tagCache.values()) t.dispose(); tagCache.clear(); models.dispose(); },
+    /** 'pass' / 'shot' events pick the skater models' clips; 'save' / 'pass' / 'steal' the goalies'. */
+    onEvent(type, e) { models.onEvent(type, e); goalies.onEvent(type, e); },
+    /** Video quality: 'low' drops the player models' ice reflections. */
+    setQuality(q) { models.setReflections(q !== 'low'); goalies.setReflections(q !== 'low'); },
+    get modelsReady() { return models.ready || goalies.ready; },
+    /** True while goalie `id` holds the puck clutched in his glove: don't draw the puck. */
+    covering(id) { return goalies.ready && goalies.covering(id); },
+    /** Draw the head indicators: call right after renderer.render(scene, camera). */
+    renderTags(renderer, camera) { tags.render(renderer, camera); },
+    tagStats: () => tags.stats(),
+    dispose() { tags.dispose(); models.dispose(); goalies.dispose(); },
   };
 }

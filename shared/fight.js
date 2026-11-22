@@ -22,7 +22,7 @@
 //   Damage scales with the attacker's chk (and slightly with the defender's chk), and drops when
 //   the attacker is low on stamina.
 //
-// FLOW: 'intro' (1.2 s, inputs ignored) -> 'fight' (up to 8 s) -> 'ko' (2.4 s outro) -> done = 1.
+// FLOW: 'intro' (1.2 s, inputs ignored) -> 'fight' (up to 15 s) -> 'ko' (2.4 s outro) -> done = 1.
 // Ends on hp <= 0 (how = 'ko') or when the clock runs out (how = 'time': higher hp wins, an exact tie
 // is decided by the fight's PRNG).
 
@@ -30,7 +30,7 @@ import { BTN, clamp } from './constants.js';
 
 export const FIGHT = {
   INTRO: 1.2,
-  DURATION: 8,
+  DURATION: 15,        // was 8: longer scraps, more of them end in a KO
   OUTRO: 2.4,
   HP: 100,
   JAB: { hit: 0.12, total: 0.3, dmg: 7.5, cost: 0.07, stun: 0.2, stun2: 0.15, whiff: 0.12, recoil: 0.1 },

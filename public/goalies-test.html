@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICE RIOT goalie model test</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f18; color: #dfe6f2; font: 13px system-ui, sans-serif; overflow: hidden; }
+  canvas { display: block; cursor: grab; touch-action: none; }
+  canvas:active { cursor: grabbing; }
+  #info { position: fixed; left: 12px; bottom: 10px; color: #9aa6ba; }
+  #bar { position: fixed; left: 12px; top: 10px; display: flex; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 24px); }
+  #bar a { color: #dfe6f2; background: #1a2232; border: 1px solid #2c3850; border-radius: 4px; padding: 3px 8px; text-decoration: none; }
+  #bar a.on { background: #ff6a13; border-color: #ff6a13; color: #0b0f18; font-weight: 600; }
+  .lbl { position: fixed; transform: translate(-50%, 0); font-weight: 600; font-size: 12px; color: #e8eef8; text-shadow: 0 1px 2px #000; white-space: nowrap; pointer-events: none; }
+</style>
+<script type="importmap">{"imports":{"three":"/vendor/three.module.min.js"}}</script>
+</head>
+<body>
+<div id="bar"></div>
+<div id="info">Loading…</div>
+<script type="module">
+// Dev page for the goalie model (models/goalie.glb, built in Múcaro by
+// blenderremake/testingmcp/hockey/build-goalie.mjs): every clip looping side by side, in team
+// colours, with the spring-physics hair. Drag to orbit, wheel to zoom.
+//   /goalies-test.html               all 15 clips
+//   /goalies-test.html?clip=butterfly one clip, close up
+//   &team=2                           team colours (TEAMS index)
+//   &t=1.2                            simulate 1.2 s deterministically, then hold (for screenshots)
+import * as THREE from 'three';
+import { GLTFLoader } from '/vendor/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkinned } from '/vendor/addons/utils/SkeletonUtils.js';
+import { TEAMS } from '/shared/constants.js';
+import { HairPhysics } from '/render/hair-physics.js';
+
+const q = new URLSearchParams(location.search);
+const T = q.has('t') ? Number(q.get('t')) : null;
+const ONLY = q.get('clip');
+const team = Number(q.get('team') || 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0f18);
+scene.add(new THREE.HemisphereLight(0xe4ecff, 0x7c8aa0, 1.1));
+const key = new THREE.DirectionalLight(0xfff8f0, 2.4);
+key.position.set(-4, 12, 8); key.castShadow = true; key.shadow.mapSize.set(2048, 2048);
+Object.assign(key.shadow.camera, { left: -8, right: 8, top: 8, bottom: -8 });
+scene.add(key);
+const ice = new THREE.Mesh(new THREE.PlaneGeometry(40, 30), new THREE.MeshStandardMaterial({ color: 0xe9f0f6, roughness: 0.2 }));
+ice.rotation.x = -Math.PI / 2; ice.receiveShadow = true; scene.add(ice);
+
+// Simple orbit camera: drag to turn, wheel to zoom.
+const camera = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.1, 200);
+const orbit = { yaw: 0, pitch: ONLY ? 0.16 : 0.5, dist: ONLY ? 4.2 : 17, target: new THREE.Vector3(0, ONLY ? 0.75 : 0.4, 0) };
+function placeCamera() {
+  const { yaw, pitch, dist, target } = orbit;
+  camera.position.set(target.x + dist * Math.sin(yaw) * Math.cos(pitch), target.y + dist * Math.sin(pitch), target.z + dist * Math.cos(yaw) * Math.cos(pitch));
+  camera.lookAt(target);
+}
+placeCamera();
+let drag = null;
+renderer.domElement.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY }; renderer.domElement.setPointerCapture(e.pointerId); });
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  orbit.yaw -= (e.clientX - drag.x) * 0.006;
+  orbit.pitch = Math.min(1.4, Math.max(-0.05, orbit.pitch + (e.clientY - drag.y) * 0.005));
+  drag = { x: e.clientX, y: e.clientY };
+  placeCamera();
+});
+addEventListener('pointerup', () => { drag = null; });
+renderer.domElement.addEventListener('wheel', (e) => { e.preventDefault(); orbit.dist = Math.min(40, Math.max(1.5, orbit.dist * Math.exp(e.deltaY * 0.001))); placeCamera(); }, { passive: false });
+
+const info = document.getElementById('info');
+const [gltf, phys] = await Promise.all([
+  new GLTFLoader().loadAsync('/models/goalie.glb'),
+  fetch('/models/goalie.physics.json').then((r) => r.json()),
+]).catch((e) => { info.textContent = 'load failed: ' + e.message; throw e; });
+
+// Team colours on the shared materials (every clone uses them), one skin tone and hair colour.
+const c = (TEAMS[team] || TEAMS[0]).colors;
+gltf.scene.traverse((o) => {
+  if (!o.isMesh) return;
+  o.castShadow = !/^(Hair|HairLight)/.test(o.name);
+  o.frustumCulled = false;
+  for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+    if (m.name === 'Primary' || m.name === 'PrimaryGloss') m.color.setHex(c.primary);
+    if (m.name === 'Secondary') m.color.setHex(c.secondary);
+    if (m.name === 'Accent') m.color.setHex(c.accent);
+  }
+});
+const clips = gltf.animations.map((a) => {
+  // hair is physics-driven: drop its tracks (and scale tracks, as the game does)
+  a.tracks = a.tracks.filter((t) => !t.name.startsWith('hair_') && !t.name.endsWith('.scale'));
+  return a;
+});
+
+// Clip buttons.
+const bar = document.getElementById('bar');
+const link = (label, href, on) => { const a = document.createElement('a'); a.textContent = label; a.href = href; if (on) a.className = 'on'; bar.appendChild(a); };
+const keep = (extra) => { const p = new URLSearchParams(q); p.delete('clip'); p.delete('t'); for (const [k, v] of Object.entries(extra)) p.set(k, v); const s = p.toString(); return s ? `?${s}` : '?'; };
+link('all', keep({}), !ONLY);
+for (const a of clips) link(a.name, keep({ clip: a.name }), ONLY === a.name);
+for (const [i, tm] of TEAMS.entries()) link(tm.name ?? `team ${i}`, `?${(() => { const p = new URLSearchParams(q); p.set('team', i); p.delete('t'); return p; })()}`, i === team);
+
+// One goalie per clip, in rows of five (front row first), all facing the camera (+Z).
+const shown = ONLY ? clips.filter((a) => a.name === ONLY) : clips;
+const COLS = 5, GX = 2.3, GZ = 3.0;
+const rigs = shown.map((clip, i) => {
+  const model = cloneSkinned(gltf.scene);
+  const col = i % COLS, row = Math.floor(i / COLS), n = Math.min(COLS, shown.length - row * COLS);
+  model.position.set((col - (n - 1) / 2) * GX, 0, -row * GZ);
+  model.updateMatrixWorld(true);
+  let hair = null;
+  try { hair = new HairPhysics(model, phys); hair.params.substep = 1 / 60; } catch (e) { console.warn('hair physics off:', e); }
+  scene.add(model);
+  const mixer = new THREE.AnimationMixer(model);
+  mixer.clipAction(clip).setLoop(THREE.LoopRepeat, Infinity).play();
+  const lbl = document.createElement('div');
+  lbl.className = 'lbl'; lbl.textContent = `${clip.name} (${Math.round(clip.duration * 24) + 1} f)`;
+  document.body.appendChild(lbl);
+  return { model, mixer, hair, lbl };
+});
+if (!ONLY) { orbit.target.z = -GZ; placeCamera(); }
+
+function step(dt) {
+  for (const r of rigs) {
+    r.mixer.update(dt);
+    r.model.updateMatrixWorld(true);
+    r.hair?.update(dt);
+  }
+}
+const _p = new THREE.Vector3();
+function draw() {
+  renderer.render(scene, camera);
+  for (const r of rigs) {
+    _p.copy(r.model.position).setY(-0.05).project(camera);
+    r.lbl.style.display = _p.z < 1 ? '' : 'none';
+    r.lbl.style.left = `${(_p.x * 0.5 + 0.5) * innerWidth}px`;
+    r.lbl.style.top = `${(-_p.y * 0.5 + 0.5) * innerHeight + 6}px`;
+  }
+}
+if (T != null) {
+  for (let t = 0; t < T; t += 1 / 60) step(1 / 60);
+  info.textContent = `t = ${T.toFixed(2)} s`;
+  renderer.setAnimationLoop(draw);
+} else {
+  const clock = new THREE.Clock();
+  renderer.setAnimationLoop(() => { step(Math.min(clock.getDelta(), 0.05)); draw(); });
+  info.textContent = `${rigs.length} goalie${rigs.length > 1 ? 's' : ''} · team ${(TEAMS[team] || TEAMS[0]).name ?? team} · drag to orbit, wheel to zoom`;
+}
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+</script>
+</body>
+</html>

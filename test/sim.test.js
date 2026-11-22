@@ -2,9 +2,10 @@
 
 import { createGame, step, snapshot, drainEvents, assignClient, releaseClient } from '../shared/sim.js';
 import {
-  DT, PHASE, PSTATE, EVENT, BTN, DEFAULT_CONFIG, boardDistance, glassPanels, TEAMS,
+  DT, PHASE, PHASE_DURATION, PSTATE, EVENT, BTN, DEFAULT_CONFIG, boardDistance, glassPanels, TEAMS,
 } from '../shared/constants.js';
 import { boardDist } from '../shared/sim-util.js';
+import { FIGHT } from '../shared/fight.js';
 
 let failures = 0, passes = 0;
 function check(cond, msg) {
@@ -314,7 +315,7 @@ section('3a. human shoots into an empty net');
   check(g.players[pid].s === PSTATE.CELEBRATE, 'scorer celebrates');
   check(goal && goal.oneTimer === false && goal.assist === -1, 'unassisted, not a one-timer');
   // GOAL -> FACEOFF at center (formation, frozen) -> PLAY
-  runUntil(g, (gm) => gm.ph !== PHASE.GOAL, 60 * 5);
+  runUntil(g, (gm) => gm.ph !== PHASE.GOAL, Math.ceil(60 * (PHASE_DURATION.GOAL + 1.5)));
   const s = snapshot(g);
   check(s.ph === PHASE.FACEOFF && s.k.x === 0 && s.k.z === 0 && s.phT > 1.5, 'GOAL phase ends with a center-ice faceoff');
   check(s.p.every((q) => q.vx === 0 && q.vz === 0 && q.s === PSTATE.SKATE), 'faceoff formation: nobody moves');
@@ -379,6 +380,29 @@ section('3c. pass + SHOOT during the pass = one-timer');
   check(pass && pass.by === 0 && pass.to === 1, 'PASS event toward the teammate in the stick direction');
   check(shot && shot.by === 1 && shot.kind === 'onetimer', `SHOT kind onetimer by the receiver (${shot && shot.kind})`);
   check(!ev.some((e) => e.type === EVENT.HIT), 'SHOOT during an incoming pass does not body-check');
+}
+
+// =====================================================================================
+section('3c2. no passing to your own goalie');
+{
+  const g = createGame({ periodLength: 60 }, 7);
+  assignClient(g, 0, 1);
+  toPlay(g);
+  const passer = g.players[0], gk = g.players[3];
+  const out = -Math.sign(gk.x) || 1;                       // from the goalie up the ice
+  place(passer, gk.x + out * 6, gk.z, out > 0 ? Math.PI : 0);   // facing the goalie
+  // both teammate skaters well behind the passer (no skater anywhere near the aim at the goalie)
+  place(g.players[1], gk.x + out * 16, 6, 0);
+  place(g.players[2], gk.x + out * 17, -6, 0);
+  place(g.players[4], 20 * out, 9, 0); place(g.players[5], 20 * out, -9, 0); place(g.players[6], 24 * out, 0, 0);
+  givePuckTo(g, passer);
+  const dx = gk.x - passer.x, dz = gk.z - passer.z, dl = Math.hypot(dx, dz);
+  let held = false;
+  const ev = runFor(g, 90, (i) => ({ 1: { mx: dx / dl, mz: dz / dl, b: i === 0 ? BTN.PASS : 0 } }),
+    (gm) => { if (gm.puck.o === 3) held = true; });
+  const pass = ev.find((e) => e.type === EVENT.PASS);
+  check(pass && pass.by === 0 && (pass.to === 1 || pass.to === 2), `PASS aimed at the goalie goes to a skater (${JSON.stringify(pass)})`);
+  check(!held, 'own goalie never ends up with the pass');
 }
 
 // =====================================================================================
@@ -510,7 +534,9 @@ section('3h. fights: big hit between two tough guys -> fight mini-game -> faceof
       if (i < 30) return { 1: { mx: 0, mz: 1, b: BTN.TURBO | (i === 0 ? BTN.SHOOT : 0) } };
       return humanFighter ? { 1: { mx: 0, mz: 0, b: i % 24 === 0 ? BTN.SHOOT : 0 } } : {};
     };
-    for (; tick < 1100; tick++) {
+    // the run-up, the longest possible fight, the faceoff after it, plus slack
+    const maxTicks = Math.ceil(60 * (5 + FIGHT.INTRO + FIGHT.DURATION + FIGHT.OUTRO + PHASE_DURATION.FACEOFF));
+    for (; tick < maxTicks; tick++) {
       if (tick === 30) for (const cid of humanFighter ? [3, 5, 2, 4, 6] : [1, 3, 5, 2, 4, 6]) releaseClient(g, cid);
       step(g, DT, inp(tick));
       const e = drainEvents(g), s = snapshot(g);
@@ -562,6 +588,41 @@ section('3h. fights: big hit between two tough guys -> fight mini-game -> faceof
       'human fighter jabs (SHOOT) are applied');
     check(hum.ev.some((e) => e.type === EV_FIGHT_END), 'human-vs-AI fight ends');
   }
+}
+
+// =====================================================================================
+section('3i. goals go past the goalie, not through him');
+{
+  // where each goal crossed the beaten goalie's plane, relative to his centre (on the ice, below 1.4 m)
+  let goals = 0, measured = 0, through = 0;
+  for (let seed = 1; seed <= 12; seed++) {
+    const g = createGame({ periodLength: 60 }, seed);
+    drainEvents(g);
+    const last = [null, null];
+    let px = g.puck.x, py = g.puck.y, pz = g.puck.z;
+    for (let i = 0; i < 60 * 60 * 12 && g.ph !== PHASE.GAME_OVER; i++) {
+      step(g, DT, {});
+      const pk = g.puck;
+      if (g.ph === PHASE.PLAY && pk.o < 0) {
+        for (let t = 0; t < 2; t++) {
+          const gk = g.players[t * 4 + 3], a = px - gk.x, b = pk.x - gk.x;
+          if (a === 0 || Math.sign(a) === Math.sign(b) || Math.abs(px - pk.x) > 3) continue;
+          const u = a / (a - b);
+          last[t] = { tick: g.tick, lat: Math.abs(pz + (pk.z - pz) * u - gk.z), y: py + (pk.y - py) * u };
+        }
+      }
+      for (const e of drainEvents(g)) {
+        if (e.type !== EVENT.GOAL) continue;
+        goals++;
+        const c = last[1 - e.team];
+        if (c && g.tick - c.tick < 40 && c.y < 1.4) { measured++; if (c.lat < 0.45) through++; }
+      }
+      px = pk.x; py = pk.y; pz = pk.z;
+    }
+  }
+  console.log(`  ${goals} goals, ${measured} measured, ${through} within 0.45 m of the goalie's centre`);
+  check(measured >= 20, `enough goals to judge (${measured})`);
+  check(through <= Math.max(1, measured * 0.05), `goals pass beside the goalie (${through}/${measured} through him)`);
 }
 
 // =====================================================================================

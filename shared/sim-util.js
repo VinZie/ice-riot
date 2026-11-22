@@ -162,6 +162,7 @@ export function newFlight(game, kind, by) {
     tick: game.tick,
     rolled: 0,          // bitmask of players that already rolled a block/intercept for this flight
     saveDone: false,    // goalie already rolled a save on this flight
+    saveG: -1,          // goalie who will save it when it reaches him (a save decided early)
     beaten: false,      // goalie was beaten on this flight (can't cover it)
     shotKind: '',
     fire: 0,

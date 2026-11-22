@@ -238,16 +238,25 @@ export function makeIceTexture(aniso) {
 }
 
 // --------------------------------------------------------------------------------------------
+// The game's fictional sponsors. `key` picks the animated LED ad in ads.js; the wordmark keeps the
+// brand's own lettering, the tagline is plain sentence-case copy.
 export const SPONSORS = [
-  { text: 'ICE RIOT', bg: '#d0142c', fg: '#ffffff', font: FONT, italic: true },
-  { text: 'COLD BREW CO.', bg: '#3b2414', fg: '#f3dfc1', font: FONT },
-  { text: 'PUCK & PIE', bg: '#ffd23f', fg: '#a3122a', font: FONT, italic: true },
-  { text: 'TAILNET ARENA', bg: '#0f2a57', fg: '#ffffff', font: FONT },
-  { text: 'GLACIER GUM', bg: '#0b8f8f', fg: '#e9fffb', font: FONT, italic: true },
-  { text: 'SLAPSHOT SODA', bg: '#ffffff', fg: '#e0262f', font: FONT, italic: true, border: '#e0262f' },
-  { text: 'ZERO KELVIN COLA', bg: '#0a0a0f', fg: '#5ee7ff', font: FONT },
-  { text: 'HAT TRICK HOT SAUCE', bg: '#121212', fg: '#ff7a1a', font: FONT, italic: true },
+  { key: 'iceriot', text: 'ICE RIOT', bg: '#d0142c', fg: '#ffffff', accent: '#ffd23f', font: FONT, italic: true, tagline: 'Three on three, all glass' },
+  { key: 'coldbrew', text: 'COLD BREW CO.', bg: '#3b2414', fg: '#f3dfc1', accent: '#ffb547', font: FONT, tagline: 'Brewed cold, served colder' },
+  { key: 'puckpie', text: 'PUCK & PIE', bg: '#ffd23f', fg: '#a3122a', accent: '#ff6a13', font: FONT, italic: true, tagline: 'Hot slices between periods' },
+  { key: 'tailnet', text: 'TAILNET ARENA', bg: '#0f2a57', fg: '#ffffff', accent: '#7fd3ff', font: FONT, tagline: 'Every seat on the network' },
+  { key: 'glacier', text: 'GLACIER GUM', bg: '#0b8f8f', fg: '#e9fffb', accent: '#bff6ff', font: FONT, italic: true, tagline: 'Fresh breath, frozen solid' },
+  { key: 'slapshot', text: 'SLAPSHOT SODA', bg: '#ffffff', fg: '#e0262f', accent: '#e0262f', font: FONT, italic: true, border: '#e0262f', tagline: 'Crack one open' },
+  { key: 'zerok', text: 'ZERO KELVIN COLA', bg: '#0a0a0f', fg: '#5ee7ff', accent: '#ffffff', font: FONT, tagline: 'The coldest cola, physically' },
+  { key: 'hattrick', text: 'HAT TRICK HOT SAUCE', bg: '#121212', fg: '#ff7a1a', accent: '#ffd23f', font: FONT, italic: true, tagline: 'Three peppers, no mercy' },
 ];
+
+/**
+ * Digital dasher boards: a band of LED screens along the boards (heights in m, `perPeriod` screens per
+ * board-texture period, `gap` m of dark bezel between neighbouring screens). rink.js draws the animated
+ * content into this band with a shader (ads.js); the board texture only carries the dark housings.
+ */
+export const BOARD_LED = { y0: 0.27, y1: 0.92, perPeriod: 8, gap: 0.05 };
 
 /** Board texture: one period of `periodM` meters (repeats around the rink). */
 export function makeBoardTexture(periodM, aniso) {
@@ -268,20 +277,14 @@ export function makeBoardTexture(periodM, aniso) {
     const x = rand() * W, y = Y(rand() * 0.45);
     g.fillRect(x, y, 2 + rand() * 16, 1 + rand() * 3);
   }
-  // ad panels
-  const n = SPONSORS.length;
-  const slot = W / n;
-  const y0 = Y(0.93), y1 = Y(0.27);
-  for (let i = 0; i < n; i++) {
-    const sp = SPONSORS[i];
-    const x0 = i * slot + PX * 0.18, w = slot - PX * 0.36;
-    g.fillStyle = sp.bg; g.fillRect(x0, y0, w, y1 - y0);
-    if (sp.border) { g.strokeStyle = sp.border; g.lineWidth = 5; g.strokeRect(x0 + 4, y0 + 4, w - 8, y1 - y0 - 8); }
-    g.fillStyle = sp.fg;
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    fitText(g, sp.text, (y1 - y0) * 0.62, w * 0.9, sp.font, sp.italic ? 'italic' : '');
-    g.fillText(sp.text, x0 + w / 2, (y0 + y1) / 2 + 2);
-  }
+  // LED screen housings: one continuous dark band with a slim frame, a seam between screens
+  const L = BOARD_LED;
+  const y0 = Y(L.y1), y1 = Y(L.y0), fr = Math.max(2, PX * 0.025);
+  g.fillStyle = '#2b313c'; g.fillRect(0, y0 - fr, W, y1 - y0 + fr * 2);
+  g.fillStyle = '#05070b'; g.fillRect(0, y0, W, y1 - y0);
+  const slot = W / L.perPeriod;
+  g.fillStyle = '#1a1f28';
+  for (let i = 0; i <= L.perPeriod; i++) g.fillRect(i * slot - PX * L.gap / 2, y0, PX * L.gap, y1 - y0);
   return canvasTex(c, { repeat: true, aniso });
 }
 
@@ -380,74 +383,32 @@ export function drawNumberAtlas(canvas, teamIdx, numbers) {
   }
 }
 
-/** Name tag canvas (pill). localColorHex: border color for a local (this-PC) player, else null. */
-export function makeNameTag(name, teamColorHex, localColorHex) {
-  const local = localColorHex != null && localColorHex !== false;
-  const W = 256, H = 64;
-  const c = makeCanvas(W, H);
-  const g = c.getContext('2d');
-  roundRectPath(g, 4, 6, W - 8, H - 12, 24);
-  g.fillStyle = local ? 'rgba(14,14,10,0.88)' : 'rgba(8,12,26,0.82)';
-  g.fill();
-  g.lineWidth = local ? 6 : 5;
-  g.strokeStyle = local ? css(localColorHex) : css(teamColorHex);
-  g.stroke();
-  g.fillStyle = '#ffffff';
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-  fitText(g, name, 34, W - 40, FONT);
-  g.fillText(name, W / 2, H / 2 + 1);
-  return canvasTex(c, { mips: false });
-}
+/** UI face for in-arena screens (system font only: Bahnschrift ships with Windows). */
+export const UI_FONT = 'Bahnschrift, "DIN Alternate", "Segoe UI", Arial, sans-serif';
+/** 1 -> '1st' ... 4+ -> 'OT' */
+export const periodLabel = (per) => (per > 3 ? 'OT' : ['', '1st', '2nd', '3rd'][per] || '');
 
-/** "Tough guy" badge: a white fist on a red roundel (players who can start fights). */
-export function makeToughIcon() {
-  const S = 128;
-  const c = makeCanvas(S, S);
-  const g = c.getContext('2d');
-  // roundel
-  g.beginPath(); g.arc(S / 2, S / 2, S / 2 - 6, 0, Math.PI * 2);
-  g.fillStyle = '#d3122f'; g.fill();
-  g.lineWidth = 8; g.strokeStyle = '#0b0f1c'; g.stroke();
-  g.beginPath(); g.arc(S / 2, S / 2, S / 2 - 14, 0, Math.PI * 2);
-  g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,0.55)'; g.stroke();
-  // fist (front view): four knuckles over a palm, thumb folded across
-  g.fillStyle = '#ffffff'; g.strokeStyle = '#0b0f1c'; g.lineWidth = 4; g.lineJoin = 'round';
-  const fx = 33, fw = 62, top = 34;
-  roundRectPath(g, fx, top + 18, fw, 44, 12); g.fill(); g.stroke();             // palm / back of hand
-  const kw = fw / 4;
-  for (let i = 0; i < 4; i++) {                                                // knuckles
-    roundRectPath(g, fx + i * kw, top + (i === 0 || i === 3 ? 6 : 0), kw, 30, 7);
-    g.fill(); g.stroke();
-  }
-  roundRectPath(g, fx - 4, top + 34, 42, 17, 8); g.fill(); g.stroke();          // thumb
-  // cuff
-  g.fillStyle = '#ffd23f';
-  roundRectPath(g, fx + 6, top + 62, fw - 12, 12, 4); g.fill(); g.stroke();
-  return canvasTex(c, { mips: false });
-}
-
-/** Jumbotron screen. */
+/** Jumbotron screen (static content: score, final, attract). The LED dot look is added by the screen shader. */
 export function drawJumbotron(canvas, teams, sc, per, mode) {
-  const g = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  const bg = g.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#0b1124'); bg.addColorStop(1, '#03050b');
-  g.fillStyle = bg; g.fillRect(0, 0, W, H);
-  // LED dot texture
-  g.fillStyle = 'rgba(255,255,255,0.035)';
-  for (let y = 0; y < H; y += 6) for (let x = (y / 6) % 2 ? 3 : 0; x < W; x += 6) g.fillRect(x, y, 2, 2);
+  drawJumboScreen(canvas.getContext('2d'), canvas.width, canvas.height, teams, sc, per, mode);
+}
+
+/** Same as drawJumbotron, into any 2D context / size (used for animated transitions). */
+export function drawJumboScreen(g, W, H, teams, sc, per, mode) {
+  g.fillStyle = '#050810'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#0a1122'; g.fillRect(0, H * 0.16, W, H * 0.5);
   g.textAlign = 'center'; g.textBaseline = 'middle';
   // header bar
   g.fillStyle = '#d0142c'; g.fillRect(0, 0, W, H * 0.16);
   g.fillStyle = '#ffffff';
-  g.font = `italic ${H * 0.1}px ${FONT}`;
-  g.fillText('ICE RIOT  •  TAILNET ARENA', W / 2, H * 0.085);
+  g.font = `italic bold ${Math.round(H * 0.095)}px ${UI_FONT}`;
+  g.fillText('Tailnet Arena', W / 2, H * 0.085);
   const h = TEAMS[teams[0]] || TEAMS[0], a = TEAMS[teams[1]] || TEAMS[1];
   if (mode === 'attract') {
     drawEmblem(g, W / 2, H * 0.55, H * 0.3);
     g.fillStyle = '#9fe6ff';
-    g.font = `${H * 0.07}px ${FONT}`;
-    g.fillText('WARMING UP THE ICE', W / 2, H * 0.92);
+    g.font = `600 ${Math.round(H * 0.07)}px ${UI_FONT}`;
+    g.fillText('Warming up the ice', W / 2, H * 0.92);
     return;
   }
   const panel = (team, x, w) => {
@@ -456,75 +417,35 @@ export function drawJumbotron(canvas, teams, sc, per, mode) {
     g.fillStyle = css(team.colors.secondary);
     g.fillRect(x, H * 0.42, w, H * 0.08);
     g.fillStyle = '#ffffff';
-    fitText(g, team.key, H * 0.15, w * 0.9, FONT);
-    g.lineWidth = 6; g.strokeStyle = css(team.colors.secondary);
+    fitText(g, team.key, H * 0.16, w * 0.9, UI_FONT, 'italic bold');
+    g.lineWidth = 6; g.lineJoin = 'round'; g.strokeStyle = css(team.colors.secondary);
     g.strokeText(team.key, x + w / 2, H * 0.325);
     g.fillText(team.key, x + w / 2, H * 0.325);
-    g.font = `${H * 0.05}px ${FONT}`;
-    g.fillText(`${team.city} ${team.name}`.toUpperCase(), x + w / 2, H * 0.46);
+    g.font = `600 ${Math.round(H * 0.052)}px ${UI_FONT}`;
+    g.fillText(`${team.city} ${team.name}`, x + w / 2, H * 0.462);
   };
   panel(h, W * 0.04, W * 0.36);
   panel(a, W * 0.60, W * 0.36);
   g.fillStyle = '#ffffff';
-  g.font = `${H * 0.36}px ${FONT}`;
-  g.fillText(String(sc[0] ?? 0), W * 0.22, H * 0.74);
-  g.fillText(String(sc[1] ?? 0), W * 0.78, H * 0.74);
+  g.font = `italic bold ${Math.round(H * 0.36)}px ${UI_FONT}`;
+  g.fillText(String(sc[0] ?? 0), W * 0.22, H * 0.75);
+  g.fillText(String(sc[1] ?? 0), W * 0.78, H * 0.75);
   g.fillStyle = '#ffd23f';
-  g.font = `${H * 0.09}px ${FONT}`;
-  const pname = per > 3 ? 'OT' : ['', '1ST', '2ND', '3RD'][per] || '';
-  g.fillText(pname, W / 2, H * 0.62);
+  g.font = `bold ${Math.round(H * 0.09)}px ${UI_FONT}`;
+  g.fillText(periodLabel(per), W / 2, H * 0.62);
   if (mode === 'goal') {
-    g.fillStyle = '#ff2a2a';
-    g.font = `italic ${H * 0.16}px ${FONT}`;
-    g.fillText('GOAL!', W / 2, H * 0.82);
+    g.fillStyle = '#ff4b3e';
+    g.font = `italic bold ${Math.round(H * 0.16)}px ${UI_FONT}`;
+    g.fillText('Goal', W / 2, H * 0.82);
   } else if (mode === 'final') {
     g.fillStyle = '#9fe6ff';
-    g.font = `${H * 0.1}px ${FONT}`;
-    g.fillText('FINAL', W / 2, H * 0.82);
+    g.font = `bold ${Math.round(H * 0.1)}px ${UI_FONT}`;
+    g.fillText('Final', W / 2, H * 0.82);
   } else {
     g.fillStyle = '#5a6480';
-    g.font = `${H * 0.12}px ${FONT}`;
-    g.fillText('-', W / 2, H * 0.78);
+    g.font = `bold ${Math.round(H * 0.12)}px ${UI_FONT}`;
+    g.fillText('–', W / 2, H * 0.78);
   }
-}
-
-/** LED ribbon (scrolling sponsor text). */
-export function makeRibbonTexture(kind = 'ads', colorHex = 0xffffff) {
-  const W = 2048, H = 64;
-  const c = makeCanvas(W, H);
-  const g = c.getContext('2d');
-  g.fillStyle = '#04060c'; g.fillRect(0, 0, W, H);
-  g.textBaseline = 'middle';
-  if (kind === 'ads') {
-    const items = [
-      ['ICE RIOT', '#ff4d1a'], ['COLD BREW CO.', '#f3dfc1'], ['PUCK & PIE', '#ffd23f'], ['TAILNET ARENA', '#7fd3ff'],
-      ['SLAPSHOT SODA', '#ff5a5a'], ['ZERO KELVIN COLA', '#5ee7ff'],
-    ];
-    let x = 20;
-    g.font = `italic 40px ${FONT}`;
-    for (const [t, col] of items) {
-      g.fillStyle = col; g.fillText(t, x, H / 2 + 2);
-      x += g.measureText(t).width + 40;
-      g.fillStyle = '#ffffff'; g.fillText('★', x - 30, H / 2);
-      x += 20;
-      if (x > W - 200) break;
-    }
-  } else {
-    g.font = `italic 48px ${FONT}`;
-    let x = 10, i = 0;
-    while (x < W) {
-      g.fillStyle = i % 2 ? '#ffffff' : css(colorHex);
-      g.fillText('GOAL!', x, H / 2 + 2);
-      x += g.measureText('GOAL!').width + 46;
-      i++;
-    }
-  }
-  // LED grid overlay
-  g.fillStyle = 'rgba(0,0,0,0.35)';
-  for (let y = 0; y < H; y += 4) g.fillRect(0, y, W, 1);
-  for (let x2 = 0; x2 < W; x2 += 4) g.fillRect(x2, 0, 1, H);
-  const t = canvasTex(c, { repeat: true });
-  return t;
 }
 
 /** Luxury-suite window band. */

@@ -3,48 +3,63 @@
 //   createSettings()       persisted + validated settings store (localStorage; works with no storage,
 //                          throwing storage, or a fake storage for tests) with change subscriptions and
 //                          a reverse key lookup for input handling.
-//   createSettingsPanel()  in-game settings overlay: Audio / Video / Controls / Gameplay.
+//   createSettingsPanel()  600px settings sheet from the right: Audio / Video / Controls / Gameplay.
 //   rebindKeys()           pure key-rebinding helper (conflicts swap bindings).
+//   keyLabel()             human label for a binding code ('KeyJ' -> 'J', 'Mouse0' -> 'Left click').
+//
+// Binding codes are KeyboardEvent.code values plus the mouse buttons 'Mouse0' (left), 'Mouse1'
+// (middle) and 'Mouse2' (right).
 //
 // Everything above the "PANEL" banner is pure (no DOM, no imports) so it runs under Node for tests.
 
-export const SETTINGS_VERSION = 1;
+export const SETTINGS_VERSION = 2;
 export const STORAGE_KEY = 'iceRiot.settings';
 export const MAX_SLOTS = 2;            // key slots per action (primary + alternate)
 export const NAME_MAX = 16;            // matches the server's hello.name limit
 
 export const ACTIONS = Object.freeze(['up', 'down', 'left', 'right', 'shoot', 'pass', 'action', 'turbo']);
 export const ACTION_LABELS = Object.freeze({
-  up: 'Move up', down: 'Move down', left: 'Move left', right: 'Move right',
-  shoot: 'Shoot / Check', pass: 'Pass / Switch', action: 'Deke / Poke', turbo: 'Turbo',
+  up: 'Skate up', down: 'Skate down', left: 'Skate left', right: 'Skate right',
+  shoot: 'Shoot \u00b7 check', pass: 'Pass \u00b7 switch', action: 'Deke \u00b7 poke', turbo: 'Turbo',
 });
 export const QUALITY_LEVELS = Object.freeze(['auto', 'high', 'medium', 'low']);
 // Codes that can never be bound: Escape cancels a rebind and opens/closes menus.
 export const RESERVED_CODES = Object.freeze(['Escape']);
+// Mouse buttons that can be bound, indexed by MouseEvent.button (0 left, 1 middle, 2 right).
+export const MOUSE_CODES = Object.freeze(['Mouse0', 'Mouse1', 'Mouse2']);
 
-// Gamepad mapping is fixed (standard mapping, see public/input.js). Shown read-only in the panel.
+// Gamepad mapping is fixed (standard mapping, see public/input.js). Shown read-only in the sheet.
 export const GAMEPAD_LAYOUT = deepFreeze([
-  { buttons: [{ t: 'L', shape: 'stick' }], label: 'Move', sub: 'Left stick or D-pad' },
-  { buttons: [{ t: 'A', shape: 'round' }], label: 'Shoot / Check', sub: 'Hold to charge a slapshot' },
-  { buttons: [{ t: 'X', shape: 'round' }], label: 'Pass / Switch', sub: 'No puck: switch skater' },
-  { buttons: [{ t: 'B', shape: 'round' }], label: 'Deke / Poke', sub: 'No puck: stick check' },
+  { buttons: [{ t: 'L', shape: 'stick' }], label: 'Skate', sub: 'Left stick or D-pad' },
+  { buttons: [{ t: 'A', shape: 'round' }], label: 'Shoot \u00b7 check', sub: 'Hold to charge a slapshot' },
+  { buttons: [{ t: 'X', shape: 'round' }], label: 'Pass \u00b7 switch', sub: 'No puck switches skater' },
+  { buttons: [{ t: 'B', shape: 'round' }], label: 'Deke \u00b7 poke', sub: 'No puck stick-checks' },
   { buttons: [{ t: 'RB', shape: 'pill' }, { t: 'RT', shape: 'pill' }, { t: 'LT', shape: 'pill' }], label: 'Turbo', sub: 'Hold to sprint' },
+  { buttons: [{ t: 'Start', shape: 'pill' }], label: 'Menu, or join on a spare pad', sub: 'Pause menu in game' },
 ]);
 
 export const DEFAULTS = deepFreeze({
-  version: 1,
+  version: 2,
   sfxVolume: 0.8, musicVolume: 0.45, announcerVolume: 0.9, announcer: true, muted: false,
   quality: 'auto',            // 'auto' | 'high' | 'medium' | 'low'
   cameraShake: 1.0,           // 0..1
   showNames: true, showTutorial: true, reduceFlashes: false,
+  puckCam: false,             // goal replays: slow-mo from behind the puck instead of the goal cam
   keys: { up: ['KeyW', 'ArrowUp'], down: ['KeyS', 'ArrowDown'], left: ['KeyA', 'ArrowLeft'], right: ['KeyD', 'ArrowRight'],
-          shoot: ['KeyJ', 'Space'], pass: ['KeyK'], action: ['KeyL'], turbo: ['ShiftLeft', 'ShiftRight'] },
+          shoot: ['Mouse0', 'Space'], pass: ['Mouse2', 'KeyK'], action: ['KeyL'], turbo: ['ShiftLeft', 'ShiftRight'] },
   name: '',
+});
+
+// Version-1 default bindings. The migrations below compare against these (never against DEFAULTS,
+// which moves on with every version).
+const V1_KEYS = deepFreeze({
+  up: ['KeyW', 'ArrowUp'], down: ['KeyS', 'ArrowDown'], left: ['KeyA', 'ArrowLeft'], right: ['KeyD', 'ArrowRight'],
+  shoot: ['KeyJ', 'Space'], pass: ['KeyK'], action: ['KeyL'], turbo: ['ShiftLeft', 'ShiftRight'],
 });
 
 const FIELD_KEYS = Object.keys(DEFAULTS).filter((k) => k !== 'version');
 const UNIT_FIELDS = new Set(['sfxVolume', 'musicVolume', 'announcerVolume', 'cameraShake']);
-const BOOL_FIELDS = new Set(['announcer', 'muted', 'showNames', 'showTutorial', 'reduceFlashes']);
+const BOOL_FIELDS = new Set(['announcer', 'muted', 'showNames', 'showTutorial', 'reduceFlashes', 'puckCam']);
 
 function deepFreeze(o) {
   if (o && typeof o === 'object' && !Object.isFrozen(o)) {
@@ -57,14 +72,22 @@ const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const isPlainObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
 const copy = (v) => (v !== null && typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v);
 const same = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b);
+const sameList = (a, b) => Array.isArray(a) && a.length === b.length && a.every((c, i) => c === b[i]);
 
 // ---------------------------------------------------------------------------------------------
 // Validation. Each validator returns the cleaned value, or undefined when the input is unusable
 // (the caller then keeps the current value on set(), or the default on load).
 
-/** True if `code` is a KeyboardEvent.code-shaped string that may be bound to an action. */
+/** True for a mouse binding code ('Mouse0' | 'Mouse1' | 'Mouse2'). */
+export function isMouseCode(code) {
+  return MOUSE_CODES.includes(code);
+}
+
+/** True if `code` is a KeyboardEvent.code-shaped string (or a mouse code) that may be bound. */
 export function isBindableCode(code) {
-  return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(code) && !RESERVED_CODES.includes(code);
+  if (typeof code !== 'string' || !/^[A-Za-z][A-Za-z0-9]{0,39}$/.test(code) || RESERVED_CODES.includes(code)) return false;
+  if (/^Mouse\d+$/.test(code)) return isMouseCode(code);   // only left, middle and right
+  return true;
 }
 
 function toUnit(v) {
@@ -194,9 +217,21 @@ export const MIGRATIONS = {
       for (const a of ACTIONS) {
         const c = o.bindings[a];
         if (!isBindableCode(c)) continue;
-        const alt = DEFAULTS.keys[a][1];       // keep the v1 alternate key when it doesn't collide
+        const alt = V1_KEYS[a][1];             // keep the v1 alternate key when it doesn't collide
         keys[a] = alt && alt !== c ? [c, alt] : [c];
       }
+      out.keys = keys;
+    }
+    return out;
+  },
+  // v1 -> v2: mouse controls. Shoot and pass that still equal the v1 defaults move to the new
+  // defaults (left click / right click as primary, Space / K as alternate); custom bindings stay.
+  1(o) {
+    const out = { ...o };
+    if (isPlainObject(o.keys)) {
+      const keys = { ...o.keys };
+      if (sameList(keys.shoot, V1_KEYS.shoot)) keys.shoot = ['Mouse0', 'Space'];
+      if (sameList(keys.pass, V1_KEYS.pass)) keys.pass = ['Mouse2', 'KeyK'];
       out.keys = keys;
     }
     return out;
@@ -291,6 +326,7 @@ export function rebindKeys(keys, action, slot, code) {
 // ---------------------------------------------------------------------------------------------
 // Key labels.
 
+const MOUSE_LABEL = { Mouse0: 'Left click', Mouse1: 'Middle click', Mouse2: 'Right click' };
 const KEY_SHORT = {
   Space: 'Space', Enter: 'Enter', Tab: 'Tab', Backspace: 'Bksp', CapsLock: 'Caps',
   ShiftLeft: 'L-Shift', ShiftRight: 'R-Shift', ControlLeft: 'L-Ctrl', ControlRight: 'R-Ctrl',
@@ -300,7 +336,7 @@ const KEY_SHORT = {
   Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Backquote: '`',
   Insert: 'Ins', Delete: 'Del', Home: 'Home', End: 'End', PageUp: 'PgUp', PageDown: 'PgDn',
   NumpadAdd: 'Num +', NumpadSubtract: 'Num -', NumpadMultiply: 'Num *', NumpadDivide: 'Num /',
-  NumpadDecimal: 'Num .', NumpadEnter: 'Num Ent',
+  NumpadDecimal: 'Num .', NumpadEnter: 'Num Enter',
 };
 const KEY_LONG = {
   ArrowUp: 'Up arrow', ArrowDown: 'Down arrow', ArrowLeft: 'Left arrow', ArrowRight: 'Right arrow',
@@ -308,9 +344,13 @@ const KEY_LONG = {
   AltLeft: 'Left Alt', AltRight: 'Right Alt', MetaLeft: 'Left Meta', MetaRight: 'Right Meta', Backspace: 'Backspace',
 };
 
-/** Human label for a KeyboardEvent.code: 'KeyW' -> 'W', 'ArrowUp' -> '\u2191' (long: 'Up arrow'). */
+/**
+ * Human label for a binding code: 'KeyW' -> 'W', 'ArrowUp' -> '\u2191' (long: 'Up arrow'),
+ * 'ShiftLeft' -> 'L-Shift', 'Mouse0' -> 'Left click', 'Mouse2' -> 'Right click'.
+ */
 export function keyLabel(code, long = false) {
   if (typeof code !== 'string' || !code) return long ? 'none' : '\u2014';
+  if (MOUSE_LABEL[code]) return MOUSE_LABEL[code];
   if (long && KEY_LONG[code]) return KEY_LONG[code];
   if (KEY_SHORT[code]) return KEY_SHORT[code];
   let m;
@@ -408,7 +448,7 @@ export function createSettings(options = {}) {
       subs.add(sub);
       return () => { subs.delete(sub); };
     },
-    /** KeyboardEvent.code -> 'up'|'down'|'left'|'right'|'shoot'|'pass'|'action'|'turbo'|null */
+    /** Binding code (KeyboardEvent.code or 'Mouse0'..'Mouse2') -> action name or null. */
     keyFor(code) {
       return (typeof code === 'string' && reverse.get(code)) || null;
     },
@@ -422,333 +462,276 @@ export function createSettings(options = {}) {
 const STYLE_ID = 'ir-set-style';
 let panelSeq = 0;
 
+// Design tokens (public/style.css :root). Fallbacks keep the sheet right on pages without style.css.
+const T = {
+  ground: 'var(--ground, #0A0F1C)', surface: 'var(--surface, #111829)', surface2: 'var(--surface-2, #172034)',
+  surface3: 'var(--surface-3, #1E2940)', hairline: 'var(--hairline, #253049)', hairline2: 'var(--hairline-strong, #34425F)',
+  ink: 'var(--ink, #E8EDF5)', ink2: 'var(--ink-2, #A1ACC0)', ink3: 'var(--ink-3, #6A7590)',
+  ice: 'var(--ice, #DCEAF6)', onIce: 'var(--on-ice, #0A0F1C)', focus: 'var(--focus, #E8EDF5)',
+  good: 'var(--good, #3FD98A)', warn: 'var(--warn, #F2C14E)', goal: 'var(--goal, #FF4B3E)',
+  rSm: 'var(--r-sm, 6px)', rMd: 'var(--r-md, 10px)',
+  font: 'var(--f-ui, Bahnschrift, "DIN Alternate", "Segoe UI", sans-serif)',
+};
+
 const PANEL_CSS = `
 .ir-set-overlay {
-  --ir-fg: #eef4ff;
-  --ir-muted: #8ea2c4;
-  --ir-line: rgba(130, 196, 255, 0.22);
-  --ir-ice: #5ad2ff;
-  --ir-hot: #ff5a1f;
-  --ir-hot2: #ff2d6f;
-  --ir-good: #44f0a0;
-  --ir-warn: #ffcf3f;
-  --ir-panel-a: rgba(26, 36, 64, 0.95);
-  --ir-panel-b: rgba(9, 12, 23, 0.96);
-  --ir-key-a: #26345a;
-  --ir-key-b: #18213b;
-  --ir-track: rgba(255, 255, 255, 0.1);
-  --ir-font: "Bahnschrift SemiCondensed", "Bahnschrift Condensed", Bahnschrift, "Roboto Condensed",
-             "Arial Narrow", "Helvetica Neue", "Segoe UI", Arial, sans-serif;
   position: fixed; inset: 0; z-index: 1000;
-  display: flex; align-items: center; justify-content: center;
-  padding: 12px;
-  background: radial-gradient(120% 90% at 50% 35%, rgba(12, 22, 44, 0.5) 0%, rgba(2, 4, 10, 0.86) 100%);
-  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
-  color: var(--ir-fg);
-  font-family: var(--ir-font); font-stretch: condensed; font-size: 16px; line-height: 1.2;
-  letter-spacing: normal; text-transform: none; text-align: left;
+  color: ${T.ink}; font-family: ${T.font}; font-size: 13px; line-height: 18px; font-weight: 400;
+  letter-spacing: normal; text-transform: none; text-align: left; font-style: normal;
   -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent;
-  box-sizing: border-box;
+  box-sizing: border-box; pointer-events: none;
 }
+.ir-set-overlay.is-open { pointer-events: auto; }
 .ir-set-overlay.ir-set-local { position: absolute; }
 .ir-set-overlay *, .ir-set-overlay *::before, .ir-set-overlay *::after { box-sizing: border-box; }
 .ir-set-overlay[hidden], .ir-set-overlay [hidden] { display: none !important; }
 .ir-set-overlay button, .ir-set-overlay input, .ir-set-overlay output {
-  font-family: inherit; font-stretch: inherit; color: inherit; margin: 0; line-height: inherit;
+  font: inherit; color: inherit; margin: 0; letter-spacing: inherit; text-transform: none;
 }
+.ir-set-overlay button { cursor: pointer; -webkit-appearance: none; appearance: none; }
 .ir-set-overlay :focus { outline: none; }
-.ir-set-overlay :focus-visible { outline: 2px solid var(--ir-ice); outline-offset: 2px; }
+.ir-set-overlay :focus-visible { outline: 2px solid ${T.focus}; outline-offset: 2px; }
+.ir-set-ico { display: inline-flex; flex: none; width: 16px; height: 16px; align-items: center; justify-content: center; }
+.ir-set-ico svg { display: block; }
+
+.ir-set-scrim {
+  position: absolute; inset: 0; background: color-mix(in srgb, ${T.ground} 55%, transparent);
+  opacity: 0; transition: opacity 120ms ease-out;
+}
+.ir-set-overlay.is-open .ir-set-scrim { opacity: 1; transition-duration: 180ms; }
 
 .ir-set-dialog {
-  position: relative; container-type: inline-size;
-  width: min(860px, 100%); min-width: 0; max-height: 100%;
-  display: flex; flex-direction: column;
-  background:
-    linear-gradient(115deg, transparent 0 62%, rgba(90, 210, 255, 0.05) 62% 70%, transparent 70%),
-    linear-gradient(170deg, var(--ir-panel-a) 0%, var(--ir-panel-b) 60%);
-  border: 1px solid var(--ir-line);
-  clip-path: polygon(24px 0, 100% 0, 100% calc(100% - 24px), calc(100% - 24px) 100%, 0 100%, 0 24px);
-  animation: ir-set-in 0.18s ease-out;
+  position: absolute; top: 0; right: 0; bottom: 0; width: 600px; max-width: 100%;
+  display: flex; flex-direction: column; padding: 0 0 0 1px;
+  background: ${T.surface};
+  box-shadow: -16px 0 40px rgba(3, 6, 14, 0.45), inset 1px 0 0 ${T.hairline2};
+  container-type: inline-size;
+  transform: translateX(100%);
 }
-.ir-set-dialog::before {
-  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 4px;
-  background: linear-gradient(90deg, var(--ir-hot) 0%, var(--ir-hot2) 45%, var(--ir-ice) 100%);
-}
-.ir-set-head {
-  position: relative; display: flex; align-items: flex-end; justify-content: space-between; gap: 12px;
-  padding: 18px 20px 12px 34px;
-}
-.ir-set-head::after {
-  content: ''; position: absolute; right: 78px; top: 18px; width: 120px; height: 36px; pointer-events: none;
-  background: repeating-linear-gradient(115deg, rgba(255, 90, 31, 0.5) 0 6px, transparent 6px 14px);
-  -webkit-mask: linear-gradient(90deg, transparent, #000); mask: linear-gradient(90deg, transparent, #000);
-}
-.ir-set-kicker {
-  display: block; font-size: 12px; font-weight: 700; letter-spacing: 0.34em; color: var(--ir-ice);
-  text-transform: uppercase; margin: 0 0 2px 2px;
-}
-.ir-set-title {
-  margin: 0; font-size: 40px; line-height: 0.92; font-weight: 800; font-style: italic;
-  letter-spacing: 0.03em; text-transform: uppercase;
-  transform: skewX(-8deg); transform-origin: left bottom;
-  color: #fff; text-shadow: 3px 3px 0 var(--ir-hot2), 6px 6px 0 rgba(0, 0, 0, 0.35);
+.ir-set-overlay.is-open .ir-set-dialog { transform: none; transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1); }
+.ir-set-overlay.is-closing .ir-set-dialog { transform: translateX(40px); opacity: 0; transition: transform 120ms ease-out, opacity 120ms ease-out; }
+.ir-set-overlay.is-closing .ir-set-scrim { opacity: 0; transition: opacity 120ms ease-out; }
+
+.ir-set-head { flex: none; height: 72px; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ir-set-title { margin: 0; font-size: 22px; line-height: 1.18; font-weight: 700; letter-spacing: -0.22px; color: ${T.ink}; }
+.ir-set-head-r { display: flex; align-items: center; gap: 8px; }
+.ir-set-esc {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: 4px;
+  background: ${T.surface3}; color: ${T.ink2}; font-size: 11px; line-height: 1.18;
 }
 .ir-set-x {
-  position: relative; z-index: 1; flex: none; width: 42px; height: 42px; padding: 0; cursor: pointer;
-  display: grid; place-items: center; font-size: 20px; font-weight: 700;
-  background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 0;
-  transform: skewX(-12deg);
+  width: 34px; height: 34px; padding: 0; display: grid; place-items: center; color: ${T.ink};
+  background: transparent; border: 1px solid ${T.hairline2}; border-radius: ${T.rMd};
+  transition: background-color 160ms ease-out;
 }
-.ir-set-x > span { transform: skewX(12deg); }
-.ir-set-x:hover { border-color: var(--ir-hot); color: #fff; background: rgba(255, 90, 31, 0.18); }
+.ir-set-x:hover { background: ${T.surface2}; }
 
 .ir-set-tabs {
-  display: flex; gap: 6px; padding: 0 20px 0 34px; border-bottom: 2px solid var(--ir-line);
-  overflow-x: auto; scrollbar-width: none;
+  flex: none; height: 38px; margin: 0 24px; padding: 3px; display: flex; gap: 2px;
+  background: ${T.ground}; border: 1px solid ${T.hairline}; border-radius: ${T.rMd};
 }
-.ir-set-tabs::-webkit-scrollbar { display: none; }
 .ir-set-tab {
-  flex: 0 0 auto; margin: 0 0 -2px; padding: 10px 20px 9px; cursor: pointer;
-  font-size: 17px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
-  color: var(--ir-muted); background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
-  transform: skewX(-14deg);
+  flex: 1 1 0; min-width: 0; padding: 0 6px; border: 0; border-radius: ${T.rSm};
+  background: transparent; color: ${T.ink2}; font-size: 13px; line-height: 1.23; white-space: nowrap;
+  transition: background-color 160ms ease-out, color 160ms ease-out;
 }
-.ir-set-tab > span { display: inline-block; transform: skewX(14deg); }
-.ir-set-tab:hover { color: var(--ir-fg); background: rgba(255, 255, 255, 0.05); }
-.ir-set-tab[aria-selected="true"] {
-  color: #fff; background: linear-gradient(90deg, var(--ir-hot), var(--ir-hot2));
-  border-bottom-color: var(--ir-warn); text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
-}
-.ir-set-tab:focus-visible { outline-offset: -3px; outline-color: #fff; }
+.ir-set-tab:hover { color: ${T.ink}; }
+.ir-set-tab[aria-selected="true"] { background: ${T.surface3}; color: ${T.ink}; }
 
 .ir-set-body {
-  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
-  padding: 10px 20px 6px 34px;
-  scrollbar-width: thin; scrollbar-color: rgba(130, 196, 255, 0.35) transparent;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
+  padding: 20px 24px; scrollbar-width: thin; scrollbar-color: ${T.hairline2} transparent;
 }
-.ir-set-sub {
-  display: flex; align-items: center; gap: 10px; margin: 10px 0 4px;
-  font-size: 12px; font-weight: 700; letter-spacing: 0.3em; text-transform: uppercase; color: var(--ir-ice);
-}
-.ir-set-sub::after { content: ''; flex: 1; height: 1px; background: linear-gradient(90deg, var(--ir-line), transparent); }
-.ir-set-sub em { font-style: normal; color: var(--ir-muted); letter-spacing: 0.18em; }
-.ir-set-row {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); align-items: center; gap: 6px 22px;
-  padding: 11px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  transition: opacity 0.15s;
-}
-.ir-set-row:last-child { border-bottom: 0; }
-.ir-set-row.is-dim { opacity: 0.45; }
-.ir-set-label { font-size: 18px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-.ir-set-label small {
-  display: block; margin-top: 2px; font-size: 13px; font-weight: 400; letter-spacing: 0.02em;
-  text-transform: none; color: var(--ir-muted);
-}
-.ir-set-ctl { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.ir-set-pane { display: flex; flex-direction: column; }
+.ir-set-pane[data-pane="controls"] { gap: 12px; }
 
+/* rows: audio / video / gameplay */
+.ir-set-row { display: flex; align-items: center; gap: 16px; min-height: 64px; transition: opacity 160ms ease-out; }
+.ir-set-row.is-tall { min-height: 72px; }
+.ir-set-row + .ir-set-row { padding-top: 1px; box-shadow: inset 0 1px 0 ${T.hairline}; }
+.ir-set-row.is-dim { opacity: 0.45; }
+.ir-set-label { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 14px; line-height: 1.21; color: ${T.ink}; }
+.ir-set-label.is-fixed { flex: none; width: 150px; }
+.ir-set-label small { display: block; font-size: 12px; line-height: 1.17; color: ${T.ink3}; }
+
+.ir-set-switch {
+  position: relative; flex: none; width: 40px; height: 22px; padding: 0; border-radius: 999px;
+  background: ${T.surface3}; border: 1px solid ${T.hairline2};
+  transition: background-color 160ms ease-out, border-color 160ms ease-out;
+}
+.ir-set-knob {
+  position: absolute; left: 3px; top: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: ${T.ink2}; transition: transform 160ms ease-out, background-color 160ms ease-out;
+}
+.ir-set-switch[aria-checked="true"] { background: ${T.ice}; border-color: ${T.ice}; }
+.ir-set-switch[aria-checked="true"] .ir-set-knob { transform: translateX(16px); background: ${T.ground}; }
+
+.ir-set-slider { flex: 1 1 0; min-width: 0; height: 16px; display: flex; align-items: center; }
 .ir-set-range {
-  -webkit-appearance: none; appearance: none; flex: 1 1 auto; min-width: 0; height: 30px;
-  background: transparent; cursor: pointer; --fill: 50%;
+  -webkit-appearance: none; appearance: none; display: block; width: 296px; max-width: 100%; height: 16px;
+  margin: 0; padding: 0; background: transparent; cursor: pointer; --p: 0.5;
 }
 .ir-set-range::-webkit-slider-runnable-track {
-  height: 8px; border: 0;
-  background: linear-gradient(90deg, transparent var(--fill), var(--ir-track) var(--fill)),
-              linear-gradient(90deg, var(--ir-ice), var(--ir-hot2));
-  transform: skewX(-20deg);
+  height: 4px; border: 0; border-radius: 2px;
+  background: linear-gradient(to right, ${T.ink} 0, ${T.ink} calc(8px + (100% - 16px) * var(--p)),
+    ${T.surface3} calc(8px + (100% - 16px) * var(--p)), ${T.surface3} 100%);
 }
 .ir-set-range::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none; width: 14px; height: 26px; margin-top: -9px;
-  background: #fff; border: 2px solid #0a0e1a; border-radius: 0;
-  box-shadow: 0 0 0 2px var(--ir-hot2), 0 2px 8px rgba(0, 0, 0, 0.6);
+  -webkit-appearance: none; appearance: none; width: 16px; height: 16px; margin-top: -6px;
+  border-radius: 50%; background: ${T.ice}; border: 2px solid ${T.surface};
 }
-.ir-set-range::-moz-range-track { height: 8px; background: var(--ir-track); border: 0; }
-.ir-set-range::-moz-range-progress { height: 8px; background: linear-gradient(90deg, var(--ir-ice), var(--ir-hot2)); }
-.ir-set-range::-moz-range-thumb {
-  width: 12px; height: 24px; background: #fff; border: 2px solid #0a0e1a; border-radius: 0;
-  box-shadow: 0 0 0 2px var(--ir-hot2);
-}
-.ir-set-range:focus-visible { outline-offset: 4px; }
-.ir-set-val {
-  flex: none; min-width: 54px; text-align: right; font-size: 20px; font-weight: 700;
-  font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
-}
-
-.ir-set-switch { position: relative; display: inline-flex; align-items: center; gap: 12px; }
-.ir-set-switch input {
-  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; z-index: 1;
-}
-.ir-set-switch-track {
-  position: relative; display: block; width: 60px; height: 28px; flex: none;
-  background: #19223b; border: 1px solid rgba(255, 255, 255, 0.16);
-  transform: skewX(-14deg); transition: background 0.15s, border-color 0.15s;
-}
-.ir-set-switch-knob {
-  position: absolute; top: 3px; left: 3px; width: 24px; height: 20px; background: var(--ir-muted);
-  transition: transform 0.15s, background 0.15s;
-}
-.ir-set-switch-text {
-  min-width: 34px; font-size: 15px; font-weight: 700; letter-spacing: 0.16em; color: var(--ir-muted);
-}
-.ir-set-switch-text::after { content: 'OFF'; }
-.ir-set-switch input:checked + .ir-set-switch-track {
-  background: linear-gradient(90deg, var(--ir-hot), var(--ir-hot2)); border-color: transparent;
-}
-.ir-set-switch input:checked + .ir-set-switch-track .ir-set-switch-knob { transform: translateX(30px); background: #fff; }
-.ir-set-switch input:checked ~ .ir-set-switch-text { color: var(--ir-fg); }
-.ir-set-switch input:checked ~ .ir-set-switch-text::after { content: 'ON'; }
-.ir-set-switch input:focus-visible + .ir-set-switch-track { outline: 2px solid var(--ir-ice); outline-offset: 3px; }
+.ir-set-range::-moz-range-track { height: 4px; border: 0; border-radius: 2px; background: ${T.surface3}; }
+.ir-set-range::-moz-range-progress { height: 4px; border-radius: 2px; background: ${T.ink}; }
+.ir-set-range::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: ${T.ice}; border: 2px solid ${T.surface}; }
+.ir-set-val { flex: none; width: 40px; text-align: right; font-size: 13px; line-height: 1.23; color: ${T.ink}; font-variant-numeric: tabular-nums; }
 
 .ir-set-seg {
-  display: flex; max-width: 100%; border: 1px solid rgba(255, 255, 255, 0.16); transform: skewX(-14deg);
-  margin-left: 4px;
+  flex: none; display: flex; gap: 2px; height: 36px; padding: 3px;
+  background: ${T.ground}; border: 1px solid ${T.hairline}; border-radius: ${T.rMd};
 }
-.ir-set-seg-opt { position: relative; flex: 1 1 0; min-width: 0; }
-.ir-set-seg-opt + .ir-set-seg-opt { border-left: 1px solid rgba(255, 255, 255, 0.12); }
-.ir-set-seg-opt input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
-.ir-set-seg-face { display: block; padding: 7px 14px; text-align: center; color: var(--ir-muted); transition: background 0.12s; }
-.ir-set-seg-txt {
-  display: inline-block; transform: skewX(14deg); font-size: 15px; font-weight: 700; letter-spacing: 0.1em;
-  text-transform: uppercase; white-space: nowrap;
+.ir-set-seg-opt {
+  flex: none; width: 60px; padding: 0; border: 0; border-radius: ${T.rSm}; background: transparent;
+  color: ${T.ink2}; font-size: 13px; line-height: 1.23; white-space: nowrap;
+  transition: background-color 160ms ease-out, color 160ms ease-out;
 }
-.ir-set-seg-opt:hover .ir-set-seg-face { color: var(--ir-fg); background: rgba(255, 255, 255, 0.05); }
-.ir-set-seg-opt input:checked + .ir-set-seg-face { color: #fff; background: linear-gradient(90deg, var(--ir-hot), var(--ir-hot2)); }
-.ir-set-seg-opt input:focus-visible + .ir-set-seg-face { outline: 2px solid var(--ir-ice); outline-offset: -3px; }
+.ir-set-seg-opt:hover { color: ${T.ink}; }
+.ir-set-seg-opt[aria-checked="true"] { background: ${T.surface3}; color: ${T.ink}; }
 
+.ir-set-field {
+  flex: none; width: 240px; max-width: 100%; height: 38px; padding: 0 12px; display: flex; align-items: center; gap: 8px;
+  background: ${T.ground}; border: 1px solid ${T.hairline}; border-radius: ${T.rMd};
+}
+.ir-set-field:has(.ir-set-text:focus-visible) { outline: 2px solid ${T.focus}; outline-offset: 2px; }
 .ir-set-text {
-  width: 100%; max-width: 280px; height: 40px; padding: 0 12px;
-  font-size: 19px; font-weight: 700; letter-spacing: 0.05em;
-  background: rgba(4, 7, 15, 0.7); border: 1px solid rgba(255, 255, 255, 0.18); border-bottom: 2px solid var(--ir-ice);
-  border-radius: 0;
+  flex: 1 1 auto; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent;
+  color: ${T.ink}; font-size: 14px; line-height: 1.21;
 }
-.ir-set-text::placeholder { color: rgba(142, 162, 196, 0.6); }
-.ir-set-text:focus-visible { outline-offset: 1px; }
+.ir-set-overlay .ir-set-text:focus-visible { outline: none; }
+.ir-set-text::placeholder { color: ${T.ink3}; }
+.ir-set-count { flex: none; font-size: 12px; line-height: 1.17; color: ${T.ink3}; font-variant-numeric: tabular-nums; }
 
-.ir-set-controls { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); gap: 4px 28px; align-items: start; }
-.ir-set-hint { margin: 2px 0 8px; font-size: 13px; color: var(--ir-muted); letter-spacing: 0.02em; }
-.ir-set-hint kbd {
-  font: inherit; font-weight: 700; color: var(--ir-fg); padding: 0 5px; border: 1px solid rgba(255, 255, 255, 0.22);
-  border-bottom-width: 2px; border-radius: 3px;
-}
-.ir-set-keys {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(76px, 104px) minmax(76px, 104px);
-  gap: 6px 8px; align-items: center;
-}
-.ir-set-keyhead { font-size: 11px; font-weight: 700; letter-spacing: 0.26em; text-transform: uppercase; color: var(--ir-muted); }
-.ir-set-keyname { min-width: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-.ir-set-keyname small {
-  display: block; font-size: 12px; font-weight: 400; letter-spacing: 0.01em; text-transform: none; color: var(--ir-muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.ir-set-keyname.is-unbound { color: var(--ir-hot); }
-.ir-set-keyname.is-unbound::after {
-  content: 'UNBOUND'; display: inline-block; margin-left: 8px; padding: 1px 5px; font-size: 10px; letter-spacing: 0.16em;
-  color: #0a0e1a; background: var(--ir-hot); vertical-align: 2px;
-}
+/* controls */
+.ir-set-khead { display: flex; align-items: center; }
+.ir-set-khead-t { flex: 1 1 0; min-width: 0; font-size: 13px; line-height: 1.23; font-weight: 600; }
+.ir-set-khead-c { flex: none; width: 120px; font-size: 12px; line-height: 1.17; color: ${T.ink3}; }
+.ir-set-khead-c.is-alt { width: 110px; }
+.ir-set-keys { display: flex; flex-direction: column; }
+.ir-set-krow { display: flex; align-items: center; min-height: 54px; padding-top: 1px; box-shadow: inset 0 1px 0 ${T.hairline}; }
+.ir-set-krow.is-skate { min-height: 48px; padding-top: 0; box-shadow: none; }
+.ir-set-keyname { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding-right: 12px; }
+.ir-set-keyname-t { font-size: 13px; line-height: 1.23; color: ${T.ink}; }
+.ir-set-keyname-h { font-size: 12px; line-height: 1.17; color: ${T.ink3}; }
+.ir-set-keyname-w { display: none; align-items: center; gap: 4px; font-size: 12px; line-height: 1.17; color: ${T.ink}; }
+.ir-set-keyname-w .ir-set-ico { width: 14px; height: 14px; color: ${T.warn}; }
+.ir-set-keyname.is-unbound .ir-set-keyname-h { display: none; }
+.ir-set-keyname.is-unbound .ir-set-keyname-w { display: flex; }
+.ir-set-kcol { flex: none; min-width: 120px; display: flex; gap: 3px; }
+.ir-set-kcol.is-alt { min-width: 110px; }
 .ir-set-key {
-  height: 36px; min-width: 0; padding: 0 8px; cursor: pointer;
-  font-size: 16px; font-weight: 700; letter-spacing: 0.05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  color: #fff; background: linear-gradient(180deg, var(--ir-key-a), var(--ir-key-b));
-  border: 1px solid rgba(255, 255, 255, 0.18); border-bottom: 3px solid #070a14; border-radius: 3px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  flex: none; width: 72px; height: 30px; padding: 0 4px; display: inline-flex; align-items: center; justify-content: center;
+  background: ${T.surface3}; border: 1px solid ${T.hairline2}; border-radius: ${T.rSm};
+  color: ${T.ink}; font-size: 12px; line-height: 1.17; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: border-color 160ms ease-out, background-color 160ms ease-out;
 }
-.ir-set-key:hover { border-color: var(--ir-ice); border-bottom-color: #070a14; }
-.ir-set-key.is-empty {
-  color: var(--ir-muted); background: transparent; border-style: dashed; border-bottom-width: 1px; box-shadow: none;
-}
-.ir-set-key.is-capturing {
-  color: var(--ir-warn); background: rgba(255, 90, 31, 0.16); border: 1px solid var(--ir-hot);
-  border-bottom: 3px solid var(--ir-hot); font-size: 13px; letter-spacing: 0.08em;
-  animation: ir-set-pulse 0.9s ease-in-out infinite;
-}
-.ir-set-key.is-flash { animation: ir-set-flash 0.8s ease-out; }
-.ir-set-keys-foot { display: flex; justify-content: flex-start; margin: 12px 0 4px; }
-
-.ir-set-pad { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.ir-set-pad li {
-  display: flex; align-items: center; gap: 10px; padding: 7px 10px;
-  background: rgba(255, 255, 255, 0.035); border-left: 3px solid rgba(90, 210, 255, 0.45);
-}
-.ir-set-pad-btns { display: flex; justify-content: center; gap: 4px; flex: none; min-width: 92px; }
-.ir-set-pad-txt { min-width: 0; font-size: 15px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-.ir-set-pad-txt small {
-  display: block; font-size: 12px; font-weight: 400; letter-spacing: 0.01em; text-transform: none; color: var(--ir-muted);
-}
-.ir-set-badge {
-  display: inline-grid; place-items: center; height: 28px; min-width: 28px; padding: 0 6px;
-  font-size: 13px; font-weight: 700; letter-spacing: 0.04em;
-  color: var(--ir-fg); border: 2px solid var(--ir-ice); background: rgba(90, 210, 255, 0.08);
-}
-.ir-set-badge.is-round { width: 28px; padding: 0; border-radius: 50%; }
-.ir-set-badge.is-pill { border-radius: 9px; border-color: var(--ir-warn); background: rgba(255, 207, 63, 0.08); }
-.ir-set-badge.is-stick { width: 28px; padding: 0; border-radius: 50%; border-style: double; border-width: 4px; }
+.ir-set-key > span { overflow: hidden; text-overflow: ellipsis; }
+.ir-set-key:hover { border-color: ${T.ink3}; }
+.ir-set-key.is-mini { width: 24px; padding: 0; }
+.ir-set-key.is-mini.is-wide { width: auto; min-width: 24px; padding: 0 5px; }
+.ir-set-key.is-empty { background: transparent; border-style: dashed; color: ${T.ink3}; }
+.ir-set-key.is-capturing { background: ${T.ground}; border: 1px solid ${T.ink}; color: ${T.ink}; font-size: 11px; line-height: 1.18; }
+.ir-set-key.is-capturing:not(.is-mini) { width: 110px; }
+.ir-set-key.is-mouse { width: 96px; gap: 6px; }
+.ir-set-key.is-mouse svg { flex: none; }
+.ir-set-key.is-flash { border-color: ${T.good}; transition: none; }
+.ir-set-key svg { display: block; }
 
 .ir-set-status {
-  min-height: 26px; padding: 5px 20px 3px 34px; font-size: 14px; font-weight: 700; letter-spacing: 0.04em;
-  color: var(--ir-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 12px; min-width: 0;
+  background: transparent; border: 1px solid ${T.hairline}; border-radius: ${T.rMd};
+  transition: background-color 160ms ease-out, border-color 160ms ease-out;
 }
-.ir-set-status[data-tone="ok"] { color: var(--ir-good); }
-.ir-set-status[data-tone="warn"] { color: var(--ir-warn); }
-.ir-set-status[data-tone="info"] { color: var(--ir-ice); }
+.ir-set-status:not([data-tone="idle"]) { background: ${T.surface2}; border-color: ${T.hairline2}; }
+.ir-set-status .ir-set-ico { color: ${T.ink2}; }
+.ir-set-status[data-tone="capture"] .ir-set-ico { color: ${T.ink}; }
+.ir-set-status[data-tone="ok"] .ir-set-ico { color: ${T.good}; }
+.ir-set-status[data-tone="warn"] .ir-set-ico { color: ${T.warn}; }
+.ir-set-status-msg { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 1.23; color: ${T.ink}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ir-set-status[data-tone="idle"] .ir-set-status-msg { color: ${T.ink2}; }
+.ir-set-status-aside { flex: none; font-size: 12px; line-height: 1.17; color: ${T.ink3}; white-space: nowrap; }
+.ir-set-div { flex: none; height: 1px; background: ${T.hairline}; }
+.ir-set-phead { display: flex; align-items: center; justify-content: space-between; }
+.ir-set-phead-t { font-size: 13px; line-height: 1.23; font-weight: 600; }
+.ir-set-phead-s { font-size: 12px; line-height: 1.17; color: ${T.ink3}; }
+.ir-set-pad { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 24px; }
+.ir-set-pad li { width: 252px; max-width: 100%; display: flex; align-items: center; gap: 10px; min-height: 26px; }
+.ir-set-pad-t { min-width: 0; font-size: 13px; line-height: 1.23; color: ${T.ink2}; }
+.ir-set-badge {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; height: 26px; width: 26px; border-radius: 13px;
+  background: ${T.surface3}; color: ${T.ink}; font-size: 11px; line-height: 1.18; font-weight: 700; white-space: nowrap;
+}
+.ir-set-badge.is-stick { background: transparent; border: 1px solid ${T.hairline2}; }
+.ir-set-badge.is-pill { width: auto; height: 24px; padding: 0 6px; border-radius: ${T.rSm}; }
+
+/* footer */
 .ir-set-foot {
-  display: flex; align-items: center; gap: 12px; padding: 10px 28px 16px 34px; border-top: 1px solid var(--ir-line);
+  flex: none; height: 80px; padding: 1px 24px 0; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  box-shadow: inset 0 1px 0 ${T.hairline};
 }
-.ir-set-foot-hint {
-  flex: 1; text-align: center; font-size: 12px; letter-spacing: 0.24em; text-transform: uppercase; color: var(--ir-muted);
-}
-.ir-set-foot-hint kbd { font: inherit; color: var(--ir-fg); font-weight: 700; }
+.ir-set-foot-l { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ir-set-foot-note { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; line-height: 1.17; color: ${T.ink2}; white-space: nowrap; }
+.ir-set-foot-note .ir-set-ico { width: 14px; height: 14px; color: ${T.good}; }
 .ir-set-btn {
-  height: 42px; padding: 0 22px; cursor: pointer; flex: none;
-  font-size: 17px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
-  border: 0; border-radius: 0; transform: skewX(-14deg);
+  flex: none; height: 40px; padding: 0 16px; border-radius: ${T.rMd}; font-size: 14px; line-height: 1.21; white-space: nowrap;
+  transition: background-color 160ms ease-out, border-color 160ms ease-out;
 }
-.ir-set-btn > span { display: inline-block; transform: skewX(14deg); }
-.ir-set-btn-primary {
-  color: #fff; background: linear-gradient(90deg, var(--ir-hot), var(--ir-hot2));
-  box-shadow: 0 0 22px rgba(255, 45, 111, 0.35); text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
+.ir-set-btn.is-secondary { background: transparent; border: 1px solid ${T.hairline2}; color: ${T.ink}; }
+.ir-set-btn.is-secondary:hover { background: ${T.surface2}; }
+.ir-set-btn.is-armed {
+  background: color-mix(in srgb, ${T.goal} 14%, ${T.surface}); border-color: color-mix(in srgb, ${T.goal} 50%, ${T.surface});
 }
-.ir-set-btn-primary:hover { filter: brightness(1.12); }
-.ir-set-btn-ghost { color: var(--ir-fg); background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.24); }
-.ir-set-btn-ghost:hover { border-color: var(--ir-ice); background: rgba(90, 210, 255, 0.08); }
-.ir-set-btn-ghost.is-armed { color: var(--ir-warn); border-color: var(--ir-hot); background: rgba(255, 90, 31, 0.16); }
-.ir-set-btn-sm { height: 34px; padding: 0 16px; font-size: 14px; }
+.ir-set-btn.is-armed:hover { background: color-mix(in srgb, ${T.goal} 20%, ${T.surface}); }
+.ir-set-btn.is-primary {
+  padding: 0 28px; background: ${T.ice}; border: 0; color: ${T.onIce}; font-size: 15px; line-height: 1.2; font-weight: 700;
+}
+.ir-set-btn.is-primary:hover { background: color-mix(in srgb, ${T.ice} 88%, #ffffff); }
 
-@keyframes ir-set-in { from { opacity: 0; transform: translateY(12px) scale(0.985); } to { opacity: 1; transform: none; } }
-@keyframes ir-set-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 90, 31, 0); }
-  50% { box-shadow: 0 0 0 4px rgba(255, 90, 31, 0.4); }
-}
-@keyframes ir-set-flash { 0% { background: var(--ir-good); color: #07120c; } 100% { } }
-.ir-set-calm .ir-set-key.is-capturing, .ir-set-calm .ir-set-key.is-flash, .ir-set-calm .ir-set-dialog { animation: none; }
+.ir-set-calm .ir-set-key.is-flash { border-color: ${T.hairline2}; }
 @media (prefers-reduced-motion: reduce) {
-  .ir-set-overlay *, .ir-set-overlay *::before, .ir-set-overlay *::after { animation: none !important; transition: none !important; }
+  .ir-set-overlay *, .ir-set-overlay *::before, .ir-set-overlay *::after { transition: none !important; animation: none !important; }
 }
-
-@container (max-width: 700px) {
-  .ir-set-controls { grid-template-columns: minmax(0, 1fr); }
-}
-@container (max-width: 560px) {
-  .ir-set-head { padding: 16px 12px 10px 20px; }
-  .ir-set-head::after { right: 62px; width: 70px; top: 16px; height: 30px; }
-  .ir-set-title { font-size: 32px; }
-  .ir-set-x { width: 38px; height: 38px; }
-  .ir-set-tabs { padding: 0 10px 0 14px; gap: 2px; }
-  .ir-set-tab { flex: 1 0 auto; padding: 10px 7px 9px; font-size: 14px; letter-spacing: 0.06em; }
-  .ir-set-body { padding: 6px 14px 6px 18px; }
-  .ir-set-row { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 10px 0; }
-  .ir-set-row.is-inline { grid-template-columns: minmax(0, 1fr) auto; }
-  .ir-set-label { font-size: 16px; }
-  .ir-set-label small { font-size: 12px; }
-  .ir-set-keys { grid-template-columns: minmax(0, 1fr) 84px 84px; gap: 6px; }
-  .ir-set-keyname { font-size: 14px; }
-  .ir-set-keyname small { white-space: normal; }
-  .ir-set-key { font-size: 15px; padding: 0 4px; }
-  .ir-set-key.is-capturing { font-size: 11px; letter-spacing: 0.02em; }
-  .ir-set-status { padding: 4px 14px 2px 18px; font-size: 13px; white-space: normal; }
-  .ir-set-foot { padding: 10px 16px 14px 18px; }
-  .ir-set-foot-hint { display: none; }
-  .ir-set-foot .ir-set-btn { flex: 1 1 0; padding: 0 10px; font-size: 15px; }
+@container (max-width: 520px) {
+  .ir-set-head { padding: 0 16px; }
+  .ir-set-tabs { margin: 0 16px; }
+  .ir-set-body { padding: 16px; }
+  .ir-set-foot { padding: 1px 16px 0; }
+  .ir-set-label.is-fixed { width: 104px; }
+  .ir-set-row.is-wrap { flex-wrap: wrap; row-gap: 10px; padding-top: 12px; padding-bottom: 12px; }
+  .ir-set-row.is-wrap .ir-set-label { flex-basis: 100%; }
+  .ir-set-kcol { min-width: 108px; }
+  .ir-set-kcol.is-alt { min-width: 104px; }
+  .ir-set-khead-c.is-alt { width: 104px; }
+  .ir-set-khead-c { width: 108px; }
+  .ir-set-status-aside { display: none; }
+  .ir-set-foot-note { white-space: normal; }
 }
 `;
+
+const ICON_X = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 3.5 L10.5 10.5 M10.5 3.5 L3.5 10.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+const ICON_KEYBOARD = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.36" stroke-linejoin="round">'
+  + '<path d="M3.2 4 L12.8 4 C13.68 4 14.4 4.72 14.4 5.6 L14.4 10.4 C14.4 11.28 13.68 12 12.8 12 L3.2 12 C2.32 12 1.6 11.28 1.6 10.4 L1.6 5.6 C1.6 4.72 2.32 4 3.2 4 Z"/>'
+  + '<path d="M4 6.4 L4.8 6.4 M6.4 6.4 L7.2 6.4 M8.8 6.4 L9.6 6.4 M11.2 6.4 L12 6.4 M4.8 9.6 L11.2 9.6" stroke-linecap="round"/></svg>';
+const ICON_WARN = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.44" stroke-linecap="round" stroke-linejoin="round">'
+  + '<path d="M8 2 L14.4 13.2 L1.6 13.2 Z"/><path d="M8 6.4 L8 9.6 M8 11.6 L8 11.68"/></svg>';
+const ICON_CHECK = '<svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.54" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 7.35 L5.6 10.15 L11.2 3.85"/></svg>';
+// Mouse glyph from the Coqui canvas (12x16, the bound button filled). Shown alone in the 24px skate
+// slots and before "Left click" / "Right click" in the 96px action slots.
+const MOUSE_FILL = {
+  Mouse0: '<path d="M6 0.75A5.25 5.25 0 0 0 0.75 6V6.5H6Z" fill="currentColor" stroke="none"/>',
+  Mouse1: '<rect x="5" y="2.6" width="2" height="3.2" rx="1" fill="currentColor" stroke="none"/>',
+  Mouse2: '<path d="M6 0.75A5.25 5.25 0 0 1 11.25 6V6.5H6Z" fill="currentColor" stroke="none"/>',
+};
+const mouseIcon = (code) => '<svg width="12" height="16" viewBox="0 0 12 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
+  + `${MOUSE_FILL[code] || ''}<rect x="0.75" y="0.75" width="10.5" height="14.5" rx="5.25"/><path d="${code === 'Mouse1' ? 'M0.75 6.5H11.25' : 'M6 0.75V6.5M0.75 6.5H11.25'}"/></svg>`;
 
 function injectStyle(doc) {
   let el = doc.getElementById(STYLE_ID);
@@ -768,15 +751,28 @@ function releaseStyle(doc) {
 }
 
 const ACTION_HINTS = {
-  shoot: 'Tap wrist shot \u00b7 hold slapshot \u00b7 no puck: check',
-  pass: 'No puck: switch skater',
-  action: 'No puck: stick check',
-  turbo: 'Hold to sprint \u00b7 + Shoot = big hit',
+  shoot: 'Tap wrister, hold slapshot, no puck checks',
+  pass: 'No puck switches skater',
+  action: 'No puck stick-checks',
+  turbo: 'Hold to sprint, add shoot for a big hit',
 };
+const SKATE_ORDER = ['up', 'left', 'down', 'right'];          // W A S D / up left down right
+const MOVE_SET = new Set(SKATE_ORDER);
 const TABS = [['audio', 'Audio'], ['video', 'Video'], ['controls', 'Controls'], ['gameplay', 'Gameplay']];
+const TAB_KEYS = TABS.map((t) => t[0]);
+const IDLE_MSG = 'Click a slot, then press a key or click';
+const IDLE_ASIDE = 'Keys in use swap';
+const CAPTURE_ASIDE = 'Esc cancels \u00b7 Backspace clears';
+const ARM_MS = 3500;
+
+const lc = (s) => (s ? s[0].toLowerCase() + s.slice(1) : s);
+const uc = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+const isTyping = (el) => !!el && (el.tagName === 'INPUT' && el.type !== 'range' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
 
 /**
- * createSettingsPanel(container, settings, { onOpen, onClose }?) -> { open, close, isOpen, dispose }
+ * createSettingsPanel(container, settings, { onOpen, onClose }?) -> { open(tab?), close, isOpen, dispose }
+ * A 600px full-height sheet sliding in from the right over a 55% scrim.
+ *   open(tab)  tab = 'audio' | 'video' | 'controls' | 'gameplay' (optional; default = last tab shown)
  * Also dispatches a bubbling `ir-settings` CustomEvent ({ detail: { open } }) on `container`.
  * container = document.body (full-screen overlay) or any element (overlay fills that element).
  */
@@ -793,10 +789,12 @@ export function createSettingsPanel(container, settings, options = {}) {
   injectStyle(doc);
 
   let open_ = false, disposed = false;
-  let capture = null;            // { action, slot } while waiting for a key
-  let swallowUp = null;          // code whose keyup must not reach the game after a capture
+  let capture = null;            // { action, slot } while waiting for a key or a click
+  let swallowUp = null;          // key code whose keyup must not reach the game after a capture
+  let eatMouse = false;          // swallow the click / contextmenu that follows a binding mousedown
+  let eatTimer = 0, lastTouchAt = -1e9;
   let lastFocus = null, activeTab = 'audio';
-  let statusTimer = 0, armTimer = 0, armed = false, downOnBackdrop = false;
+  let statusTimer = 0, armTimer = 0, noteTimer = 0, hideTimer = 0, armed = false;
   const flashTimers = new Set();
   const syncers = [];            // (state) => void, refresh one control from settings
 
@@ -808,6 +806,7 @@ export function createSettingsPanel(container, settings, options = {}) {
         if (v === undefined || v === null || v === false) continue;
         if (k === 'class') el.className = v;
         else if (k === 'text') el.textContent = v;
+        else if (k === 'html') el.innerHTML = v;            // static icon markup only
         else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
         else el.setAttribute(k, v === true ? '' : String(v));
       }
@@ -818,9 +817,20 @@ export function createSettingsPanel(container, settings, options = {}) {
     }
     return el;
   }
-  const label = (forId, text, sub, id) => h(forId ? 'label' : 'div', { class: 'ir-set-label', for: forId, id }, text, sub ? h('small', { text: sub }) : null);
+  const icon = (svg) => h('span', { class: 'ir-set-ico', 'aria-hidden': 'true', html: svg });
+  const label = (forId, text, sub, extra = '') => h('label', { class: `ir-set-label${extra}`, for: forId },
+    h('span', { text }), sub ? h('small', { text: sub }) : null);
 
-  function sliderRow(key, text, sub) {
+  // --- audio / video / gameplay rows ---
+  function toggleRow(key, text, sub) {
+    const id = `${uid}-${key}`;
+    const btn = h('button', { type: 'button', role: 'switch', id, class: 'ir-set-switch', 'aria-checked': 'false' },
+      h('span', { class: 'ir-set-knob', 'aria-hidden': 'true' }));
+    btn.addEventListener('click', () => settings.set(key, !settings.get(key)));
+    syncers.push((s) => btn.setAttribute('aria-checked', s[key] ? 'true' : 'false'));
+    return h('div', { class: 'ir-set-row', 'data-key': key }, label(id, text, sub), btn);
+  }
+  function sliderRow(key, text) {
     const id = `${uid}-${key}`;
     const input = h('input', { type: 'range', id, class: 'ir-set-range', min: 0, max: 100, step: 1 });
     const out = h('output', { class: 'ir-set-val', for: id, 'aria-hidden': 'true' });
@@ -828,193 +838,246 @@ export function createSettingsPanel(container, settings, options = {}) {
     syncers.push((s) => {
       const pct = Math.round(s[key] * 100);
       if (Number(input.value) !== pct) input.value = String(pct);
-      input.style.setProperty('--fill', `${pct}%`);
+      input.style.setProperty('--p', String(pct / 100));
       input.setAttribute('aria-valuetext', `${pct}%`);
       out.textContent = `${pct}%`;
     });
-    return h('div', { class: 'ir-set-row', 'data-key': key }, label(id, text, sub), h('div', { class: 'ir-set-ctl' }, input, out));
-  }
-  function toggleRow(key, text, sub) {
-    const id = `${uid}-${key}`;
-    const input = h('input', { type: 'checkbox', role: 'switch', id });
-    input.addEventListener('change', () => settings.set(key, input.checked));
-    syncers.push((s) => { input.checked = !!s[key]; });
-    return h('div', { class: 'ir-set-row is-inline', 'data-key': key }, label(id, text, sub),
-      h('div', { class: 'ir-set-ctl' },
-        h('span', { class: 'ir-set-switch' }, input,
-          h('span', { class: 'ir-set-switch-track', 'aria-hidden': 'true' }, h('span', { class: 'ir-set-switch-knob' })),
-          h('span', { class: 'ir-set-switch-text', 'aria-hidden': 'true' }))));
+    return h('div', { class: 'ir-set-row', 'data-key': key }, label(id, text, null, ' is-fixed'),
+      h('div', { class: 'ir-set-slider' }, input), out);
   }
   function qualityRow() {
-    const lid = `${uid}-quality-label`, name = `${uid}-quality`;
-    const radios = [];
-    const seg = h('div', { class: 'ir-set-seg', role: 'radiogroup', 'aria-labelledby': lid },
-      [['auto', 'Auto'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']].map(([v, t]) => {
-        const r = h('input', { type: 'radio', name, value: v, 'aria-label': t });
-        r.addEventListener('change', () => { if (r.checked) settings.set('quality', v); });
-        radios.push(r);
-        return h('label', { class: 'ir-set-seg-opt' }, r, h('span', { class: 'ir-set-seg-face' }, h('span', { class: 'ir-set-seg-txt', text: t })));
-      }));
-    syncers.push((s) => { for (const r of radios) r.checked = r.value === s.quality; });
-    return h('div', { class: 'ir-set-row', 'data-key': 'quality' },
-      label(null, 'Quality', 'Auto adapts to your device. Lower = smoother frame rate.', lid), h('div', { class: 'ir-set-ctl' }, seg));
+    const lid = `${uid}-quality-label`;
+    const optsList = [['auto', 'Auto'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']];
+    const btns = optsList.map(([v, t]) => {
+      const b = h('button', { type: 'button', role: 'radio', class: 'ir-set-seg-opt', 'data-value': v, 'aria-checked': 'false', tabindex: '-1', text: t });
+      b.addEventListener('click', () => settings.set('quality', v));
+      return b;
+    });
+    const seg = h('div', { class: 'ir-set-seg', role: 'radiogroup', 'aria-labelledby': lid }, btns);
+    seg.addEventListener('keydown', (e) => {
+      const dir = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+      if (!dir) return;
+      e.preventDefault();
+      const i = optsList.findIndex(([v]) => v === settings.get('quality'));
+      const n = (Math.max(0, i) + dir + optsList.length) % optsList.length;
+      settings.set('quality', optsList[n][0]);
+      btns[n].focus();
+    });
+    syncers.push((s) => {
+      for (const b of btns) {
+        const on = b.dataset.value === s.quality;
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+        b.tabIndex = on ? 0 : -1;
+      }
+    });
+    return h('div', { class: 'ir-set-row is-tall is-wrap', 'data-key': 'quality' },
+      h('div', { class: 'ir-set-label', id: lid }, h('span', { text: 'Quality' }), h('small', { text: 'Auto adapts to your device' })),
+      seg);
   }
   function nameRow() {
     const id = `${uid}-name`;
     const input = h('input', {
       type: 'text', id, class: 'ir-set-text', maxlength: NAME_MAX, autocomplete: 'off', autocapitalize: 'off',
-      spellcheck: 'false', placeholder: 'Skater', enterkeyhint: 'done',
+      spellcheck: 'false', placeholder: 'Skater', enterkeyhint: 'done', 'aria-describedby': `${id}-count`,
     });
-    input.addEventListener('input', () => settings.set('name', input.value));
-    input.addEventListener('change', () => { input.value = settings.get('name'); });
-    syncers.push((s) => { if (doc.activeElement !== input) input.value = s.name; });
-    return h('div', { class: 'ir-set-row', 'data-key': 'name' },
-      label(id, 'Player name', `Shown to other players when you join a room (max ${NAME_MAX}).`), h('div', { class: 'ir-set-ctl' }, input));
+    const count = h('span', { class: 'ir-set-count', id: `${id}-count` });
+    const recount = () => { count.textContent = `${input.value.length}/${NAME_MAX}`; };
+    input.addEventListener('input', () => { settings.set('name', input.value); recount(); });
+    input.addEventListener('change', () => { input.value = settings.get('name'); recount(); });
+    syncers.push((s) => { if (doc.activeElement !== input) input.value = s.name; recount(); });
+    return h('div', { class: 'ir-set-row is-tall is-wrap', 'data-key': 'name' },
+      label(id, 'Player name'), h('div', { class: 'ir-set-field' }, input, count));
   }
 
   // --- controls tab ---
   const keyBtns = {};   // 'action:slot' -> button
-  const keyNames = {};  // action -> name cell
-  const keyRows = ACTIONS.map((a) => {
-    keyNames[a] = h('div', { class: 'ir-set-keyname', id: `${uid}-k-${a}` }, ACTION_LABELS[a], ACTION_HINTS[a] ? h('small', { text: ACTION_HINTS[a] }) : null);
-    const btns = [0, 1].map((slot) => {
-      const b = h('button', { type: 'button', class: 'ir-set-key', 'data-action': a, 'data-slot': slot });
-      b.addEventListener('click', () => {
-        if (capture && capture.action === a && capture.slot === slot) { cancelCapture('Rebind cancelled'); return; }
-        startCapture(a, slot);
-      });
-      keyBtns[`${a}:${slot}`] = b;
-      return b;
-    });
-    return [keyNames[a], ...btns];
+  const keyNames = {};  // action -> name cell (the four skate directions share one)
+  function slotBtn(action, slot, mini) {
+    const b = h('button', { type: 'button', class: `ir-set-key${mini ? ' is-mini' : ''}`, 'data-action': action, 'data-slot': slot });
+    b.addEventListener('click', () => { if (!capture) startCapture(action, slot); });
+    b.addEventListener('contextmenu', (e) => e.preventDefault());
+    keyBtns[`${action}:${slot}`] = b;
+    return b;
+  }
+  function nameCell(id, title, hint) {
+    return h('div', { class: 'ir-set-keyname', id },
+      h('span', { class: 'ir-set-keyname-t', text: title }),
+      hint ? h('span', { class: 'ir-set-keyname-h', text: hint }) : null,
+      h('span', { class: 'ir-set-keyname-w' }, icon(ICON_WARN), h('span', { class: 'ir-set-keyname-wt', text: 'Not bound' })));
+  }
+  const skateName = nameCell(`${uid}-k-skate`, 'Skate', null);
+  for (const a of SKATE_ORDER) keyNames[a] = skateName;
+  const skateRow = h('div', { class: 'ir-set-krow is-skate', 'data-row': 'skate' }, skateName,
+    h('div', { class: 'ir-set-kcol' }, SKATE_ORDER.map((a) => slotBtn(a, 0, true))),
+    h('div', { class: 'ir-set-kcol is-alt' }, SKATE_ORDER.map((a) => slotBtn(a, 1, true))));
+  const actionRows = ['shoot', 'pass', 'action', 'turbo'].map((a) => {
+    keyNames[a] = nameCell(`${uid}-k-${a}`, ACTION_LABELS[a], ACTION_HINTS[a]);
+    return h('div', { class: 'ir-set-krow', 'data-row': a }, keyNames[a],
+      h('div', { class: 'ir-set-kcol' }, slotBtn(a, 0, false)),
+      h('div', { class: 'ir-set-kcol is-alt' }, slotBtn(a, 1, false)));
   });
-  const resetKeysBtn = h('button', { type: 'button', class: 'ir-set-btn ir-set-btn-ghost ir-set-btn-sm', 'data-act': 'reset-keys' }, h('span', { text: 'Reset controls' }));
-  resetKeysBtn.addEventListener('click', () => {
-    cancelCapture();
-    settings.set('keys', DEFAULTS.keys);
-    say('Controls reset to defaults', 'ok');
-  });
-  const padList = h('ul', { class: 'ir-set-pad', 'aria-label': 'Gamepad buttons (fixed)' },
-    GAMEPAD_LAYOUT.map((g) => h('li', null,
-      h('span', { class: 'ir-set-pad-btns', 'aria-hidden': 'true' }, g.buttons.map((b) => h('span', { class: `ir-set-badge is-${b.shape}`, text: b.t }))),
-      h('span', { class: 'ir-set-pad-txt' }, `${g.label}`, h('small', { text: `${g.buttons.map((b) => b.t).join(' / ')} \u00b7 ${g.sub}` })))));
 
+  const statusIco = h('span', { class: 'ir-set-ico', 'aria-hidden': 'true' });
+  const statusMsg = h('span', { class: 'ir-set-status-msg' });
+  const statusAside = h('span', { class: 'ir-set-status-aside' });
+  const statusEl = h('div', { class: 'ir-set-status', role: 'status', 'aria-live': 'polite', 'data-tone': 'idle' }, statusIco, statusMsg, statusAside);
+
+  const padList = h('ul', { class: 'ir-set-pad', 'aria-label': 'Gamepad buttons, fixed layout' },
+    GAMEPAD_LAYOUT.map((g) => {
+      const shape = g.buttons[0].shape;
+      const text = g.buttons.map((b) => b.t).join(' ');
+      return h('li', null,
+        h('span', { class: `ir-set-badge is-${shape}`, text }),
+        h('span', { class: 'ir-set-pad-t', text: g.label }));
+    }));
+
+  function slotContent(b, code, cap, mini) {
+    b.classList.remove('is-wide');
+    b.classList.remove('is-mouse');
+    if (cap) { b.textContent = mini ? '\u2026' : 'Press a key or click'; return; }
+    if (!code) { b.textContent = '\u2014'; return; }
+    if (mini && isMouseCode(code)) { b.innerHTML = mouseIcon(code); return; }
+    const t = keyLabel(code);
+    if (isMouseCode(code)) { b.classList.add('is-mouse'); b.innerHTML = mouseIcon(code); b.append(h('span', { text: t })); return; }
+    if (mini && t.length > 1) b.classList.add('is-wide');
+    b.replaceChildren(h('span', { text: t }));
+  }
   function syncKeys(s = settings.all()) {
     for (const a of ACTIONS) {
       const list = s.keys[a] || [];
-      keyNames[a].classList.toggle('is-unbound', list.length === 0);
       for (let slot = 0; slot < MAX_SLOTS; slot++) {
         const b = keyBtns[`${a}:${slot}`];
         const code = list[slot];
         const cap = !!capture && capture.action === a && capture.slot === slot;
-        b.textContent = cap ? 'PRESS A KEY\u2026' : keyLabel(code);
+        const mini = MOVE_SET.has(a);
+        slotContent(b, code, cap, mini);
         b.classList.toggle('is-empty', !code && !cap);
         b.classList.toggle('is-capturing', cap);
         b.setAttribute('aria-pressed', cap ? 'true' : 'false');
-        b.setAttribute('aria-label', `${ACTION_LABELS[a]}, ${slot ? 'alternate' : 'primary'} key: ${cap ? 'waiting for a key' : keyLabel(code, true)}`);
-        b.title = cap ? 'Press a key \u00b7 Esc cancels \u00b7 Backspace clears' : 'Click to rebind';
+        b.setAttribute('aria-label', `${ACTION_LABELS[a]}, ${slot ? 'alternate' : 'primary'}: ${cap ? 'press a key or click' : code ? keyLabel(code, true) : 'not bound'}`);
+        b.title = cap ? `Press a key or click \u00b7 ${CAPTURE_ASIDE}` : 'Click to change';
       }
     }
+    for (const a of ['shoot', 'pass', 'action', 'turbo']) keyNames[a].classList.toggle('is-unbound', !(s.keys[a] || []).length);
+    const lost = SKATE_ORDER.filter((a) => !(s.keys[a] || []).length);
+    skateName.classList.toggle('is-unbound', lost.length > 0);
+    skateName.querySelector('.ir-set-keyname-wt').textContent = lost.length ? `Not bound: ${lost.join(', ')}` : 'Not bound';
   }
 
   // --- skeleton ---
   const titleId = `${uid}-title`;
   const tabBtns = {}, panes = {};
-  const closeBtn = h('button', { type: 'button', class: 'ir-set-x', 'aria-label': 'Close settings', title: 'Close (Esc)' }, h('span', { 'aria-hidden': 'true', text: '\u2715' }));
+  const closeBtn = h('button', { type: 'button', class: 'ir-set-x', 'aria-label': 'Close settings', title: 'Close (Esc)', html: ICON_X });
   const tablist = h('div', { class: 'ir-set-tabs', role: 'tablist', 'aria-label': 'Settings sections' },
     TABS.map(([k, t]) => (tabBtns[k] = h('button', {
-      type: 'button', role: 'tab', class: 'ir-set-tab', id: `${uid}-tab-${k}`, 'aria-controls': `${uid}-pane-${k}`, 'data-tab': k,
-    }, h('span', { text: t })))));
+      type: 'button', role: 'tab', class: 'ir-set-tab', id: `${uid}-tab-${k}`, 'aria-controls': `${uid}-pane-${k}`, 'data-tab': k, text: t,
+    }))));
   const pane = (k, ...kids) => (panes[k] = h('section', { class: 'ir-set-pane', role: 'tabpanel', id: `${uid}-pane-${k}`, 'aria-labelledby': `${uid}-tab-${k}`, 'data-pane': k }, ...kids));
 
   const body = h('div', { class: 'ir-set-body' },
     pane('audio',
-      toggleRow('muted', 'Mute all', 'Silences effects and music'),
-      sliderRow('sfxVolume', 'Sound effects', 'Hits, shots, glass, crowd'),
-      sliderRow('musicVolume', 'Music')),
+      toggleRow('muted', 'Mute all', 'M toggles it anywhere'),
+      sliderRow('sfxVolume', 'Sound effects'),
+      sliderRow('musicVolume', 'Music'),
+      sliderRow('announcerVolume', 'Announcer')),
     pane('video',
       qualityRow(),
-      sliderRow('cameraShake', 'Camera shake', '0% turns it off'),
-      toggleRow('reduceFlashes', 'Reduce flashes', 'Softer goal lights, hit flashes and screen flashes'),
-      toggleRow('showNames', 'Show player names', 'Name tags over human-controlled skaters')),
+      sliderRow('cameraShake', 'Camera shake'),
+      toggleRow('reduceFlashes', 'Reduce flashes', 'Softer goal lights and hit flashes'),
+      toggleRow('showNames', 'Name tags over players'),
+      toggleRow('puckCam', 'Puck cam on goal replays', 'Ride with the puck instead of the goal cam')),
     pane('controls',
-      h('div', { class: 'ir-set-controls' },
-        h('div', null,
-          h('div', { class: 'ir-set-sub' }, 'Keyboard'),
-          h('p', { class: 'ir-set-hint' }, 'Click a slot, then press a key. ', h('kbd', { text: 'Esc' }), ' cancels \u00b7 ',
-            h('kbd', { text: 'Bksp' }), ' clears. Keys already in use swap.'),
-          h('div', { class: 'ir-set-keys', role: 'group', 'aria-label': 'Keyboard bindings' },
-            h('span', { class: 'ir-set-keyhead', text: 'Action' }), h('span', { class: 'ir-set-keyhead', text: 'Primary' }),
-            h('span', { class: 'ir-set-keyhead', text: 'Alternate' }), keyRows),
-          h('div', { class: 'ir-set-keys-foot' }, resetKeysBtn)),
-        h('div', null,
-          h('div', { class: 'ir-set-sub' }, 'Gamepad ', h('em', { text: '\u00b7 fixed' })),
-          padList))),
+      h('div', { class: 'ir-set-khead', 'aria-hidden': 'true' },
+        h('span', { class: 'ir-set-khead-t', text: 'Keyboard and mouse' }),
+        h('span', { class: 'ir-set-khead-c', text: 'Primary' }),
+        h('span', { class: 'ir-set-khead-c is-alt', text: 'Alternate' })),
+      h('div', { class: 'ir-set-keys', role: 'group', 'aria-label': 'Keyboard and mouse bindings' }, skateRow, actionRows),
+      statusEl,
+      h('div', { class: 'ir-set-div' }),
+      h('div', { class: 'ir-set-phead' }, h('span', { class: 'ir-set-phead-t', text: 'Gamepad' }), h('span', { class: 'ir-set-phead-s', text: 'Fixed layout' })),
+      padList),
     pane('gameplay',
-      toggleRow('showTutorial', 'Show tutorial hints', 'On-screen tips for shooting, passing and checking'),
+      toggleRow('showTutorial', 'Tutorial hints', 'Tips for shooting, passing and checking'),
       nameRow()));
 
-  const statusEl = h('div', { class: 'ir-set-status', role: 'status', 'aria-live': 'polite' });
-  const resetAllBtn = h('button', { type: 'button', class: 'ir-set-btn ir-set-btn-ghost', 'data-act': 'reset-all' }, h('span', { text: 'Reset all' }));
-  const doneBtn = h('button', { type: 'button', class: 'ir-set-btn ir-set-btn-primary', 'data-act': 'done' }, h('span', { text: 'Done' }));
+  const resetAllBtn = h('button', { type: 'button', class: 'ir-set-btn is-secondary', 'data-act': 'reset-all', text: 'Reset all' });
+  const footNote = h('span', { class: 'ir-set-foot-note', 'aria-live': 'polite' });
+  const doneBtn = h('button', { type: 'button', class: 'ir-set-btn is-primary', 'data-act': 'done', text: 'Done' });
   const dialog = h('div', { class: 'ir-set-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId },
     h('header', { class: 'ir-set-head' },
-      h('div', null, h('span', { class: 'ir-set-kicker', text: 'Ice Riot' }), h('h2', { class: 'ir-set-title', id: titleId, text: 'Settings' })),
-      closeBtn),
-    tablist, body, statusEl,
-    h('footer', { class: 'ir-set-foot' }, resetAllBtn,
-      h('span', { class: 'ir-set-foot-hint' }, h('kbd', { text: 'Esc' }), ' close \u00b7 ', h('kbd', { text: 'Tab' }), ' move'), doneBtn));
-  const overlay = h('div', { class: 'ir-set-overlay', hidden: true }, dialog);
+      h('h2', { class: 'ir-set-title', id: titleId, text: 'Settings' }),
+      h('div', { class: 'ir-set-head-r' }, h('span', { class: 'ir-set-esc', 'aria-hidden': 'true', text: 'Esc' }), closeBtn)),
+    tablist, body,
+    h('footer', { class: 'ir-set-foot' }, h('div', { class: 'ir-set-foot-l' }, resetAllBtn, footNote), doneBtn));
+  const scrim = h('div', { class: 'ir-set-scrim', 'aria-hidden': 'true' });
+  const overlay = h('div', { class: 'ir-set-overlay', hidden: true }, scrim, dialog);
   if (container !== doc.body && container !== doc.documentElement) {
     overlay.classList.add('ir-set-local');
     try { if (win.getComputedStyle(container).position === 'static') container.style.position = 'relative'; } catch { /* ignore */ }
   }
   container.appendChild(overlay);
 
-  // --- behaviour ---
-  function say(msg, tone = 'info', sticky = false) {
-    clearTimeout(statusTimer);
-    statusEl.textContent = msg;
+  // --- status line (controls tab) ---
+  function setStatus(tone, msg, aside = '') {
     statusEl.dataset.tone = tone;
-    if (!sticky) statusTimer = setTimeout(() => { statusEl.textContent = ''; }, 5000);
+    statusIco.innerHTML = tone === 'ok' ? ICON_CHECK : tone === 'warn' ? ICON_WARN : ICON_KEYBOARD;
+    statusMsg.textContent = msg;
+    statusMsg.title = msg;
+    statusAside.textContent = aside;
   }
+  const idle = () => { clearTimeout(statusTimer); setStatus('idle', IDLE_MSG, IDLE_ASIDE); };
+  function say(msg, tone = 'info') {
+    clearTimeout(statusTimer);
+    setStatus(tone, msg);
+    statusTimer = setTimeout(idle, 5000);
+  }
+  idle();
+
+  // --- rebinding ---
   function flash(action, code) {
     if (!code) return;
     const i = (settings.get('keys')[action] || []).indexOf(code);
     const b = keyBtns[`${action}:${i}`];
     if (!b) return;
-    b.classList.remove('is-flash');
-    void b.offsetWidth;  // restart the animation
     b.classList.add('is-flash');
-    const t = setTimeout(() => { b.classList.remove('is-flash'); flashTimers.delete(t); }, 900);
+    const t = setTimeout(() => { b.classList.remove('is-flash'); flashTimers.delete(t); }, 700);
     flashTimers.add(t);
   }
   function startCapture(action, slot) {
     capture = { action, slot };
+    clearTimeout(statusTimer);
     syncKeys();
-    say(`Press a key for ${ACTION_LABELS[action]} (${slot ? 'alternate' : 'primary'}) \u00b7 Esc cancels \u00b7 Backspace clears`, 'info', true);
+    setStatus('capture', `Press a key or click for ${lc(ACTION_LABELS[action])}`, CAPTURE_ASIDE);
   }
   function cancelCapture(msg) {
     if (!capture) return;
     capture = null;
     syncKeys();
-    if (msg) say(msg, 'info'); else statusEl.textContent = '';
+    if (msg) say(msg, 'info'); else idle();
   }
+  const word = (code) => (isMouseCode(code) ? lc(keyLabel(code)) : keyLabel(code));
   function applyCapture(code) {
     const { action, slot } = capture;
     capture = null;
+    const before = settings.get('keys')[action] || [];
     const r = rebindKeys(settings.get('keys'), action, slot, code);
-    const name = ACTION_LABELS[action];
+    const name = lc(ACTION_LABELS[action]);
     if (r.error) {
-      say(r.error === 'reserved' ? `${keyLabel(code, true)} is reserved for menus` : "That key can't be bound", 'warn');
+      say(r.error === 'reserved' ? 'Esc is kept for menus' : "That key can't be bound", 'warn');
     } else if (!r.changed) {
-      say(`${name} unchanged`, 'info');
+      say(code === null ? 'That slot is already empty' : `${uc(name)} already uses ${word(code)}`, 'info');
     } else {
       settings.set('keys', r.keys);
-      let msg = code === null ? `${name}: ${slot ? 'alternate' : 'primary'} key cleared` : `${name} \u2192 ${keyLabel(code)}`;
-      if (r.swap && r.swap.action === action) msg = `${name}: primary and alternate swapped`;
-      else if (r.swap) msg += r.swap.code ? ` \u00b7 swapped: ${ACTION_LABELS[r.swap.action]} \u2192 ${keyLabel(r.swap.code)}` : ` \u00b7 taken from ${ACTION_LABELS[r.swap.action]}`;
-      if (r.unbound.length) msg += ` \u00b7 ${r.unbound.map((a) => ACTION_LABELS[a]).join(', ')} unbound!`;
+      let msg;
+      if (code === null) msg = `Cleared ${word(before[slot])} from ${name}`;
+      else if (r.swap && r.swap.action === action) msg = `Swapped primary and alternate for ${name}`;
+      else if (r.swap && r.swap.code) msg = `Bound ${word(code)} to ${name} and moved ${word(r.swap.code)} to ${lc(ACTION_LABELS[r.swap.action])}`;
+      else if (r.swap) msg = `Bound ${word(code)} to ${name}, taken from ${lc(ACTION_LABELS[r.swap.action])}`;
+      else msg = `Bound ${word(code)} to ${name}`;
+      if (r.unbound.length) {
+        const list = r.unbound.map((a) => lc(ACTION_LABELS[a])).join(', ');
+        msg += `. ${uc(list)} ${r.unbound.length > 1 ? 'have' : 'has'} no key now`;
+      }
       say(msg, r.unbound.length ? 'warn' : 'ok');
       flash(action, code);
       if (r.swap) flash(r.swap.action, r.swap.code);
@@ -1022,6 +1085,7 @@ export function createSettingsPanel(container, settings, options = {}) {
     syncKeys();
   }
 
+  // --- tabs ---
   function selectTab(k, focus) {
     if (!tabBtns[k]) k = 'audio';
     if (k !== activeTab) cancelCapture();
@@ -1040,22 +1104,21 @@ export function createSettingsPanel(container, settings, options = {}) {
     if (b) selectTab(b.dataset.tab, true);
   });
   tablist.addEventListener('keydown', (e) => {
-    const order = TABS.map((t) => t[0]);
-    let i = order.indexOf(activeTab);
-    if (e.key === 'ArrowRight') i = (i + 1) % order.length;
-    else if (e.key === 'ArrowLeft') i = (i - 1 + order.length) % order.length;
+    let i = TAB_KEYS.indexOf(activeTab);
+    if (e.key === 'ArrowRight') i = (i + 1) % TAB_KEYS.length;
+    else if (e.key === 'ArrowLeft') i = (i - 1 + TAB_KEYS.length) % TAB_KEYS.length;
     else if (e.key === 'Home') i = 0;
-    else if (e.key === 'End') i = order.length - 1;
+    else if (e.key === 'End') i = TAB_KEYS.length - 1;
     else return;
     e.preventDefault();
-    selectTab(order[i], true);
+    selectTab(TAB_KEYS[i], true);
   });
 
   function sync() {
     const s = settings.all();
     for (const fn of syncers) fn(s);
     syncKeys(s);
-    for (const k of ['sfxVolume', 'musicVolume']) {
+    for (const k of ['sfxVolume', 'musicVolume', 'announcerVolume']) {
       const row = body.querySelector(`[data-key="${k}"]`);
       if (row) row.classList.toggle('is-dim', s.muted);
     }
@@ -1063,48 +1126,50 @@ export function createSettingsPanel(container, settings, options = {}) {
   }
   const unsubscribe = settings.subscribe(() => { if (!disposed) sync(); });
 
+  // --- footer ---
   function disarm() {
     clearTimeout(armTimer);
     armed = false;
     resetAllBtn.classList.remove('is-armed');
-    resetAllBtn.firstChild.textContent = 'Reset all';
+    resetAllBtn.textContent = 'Reset all';
+    if (footNote.dataset.kind === 'arm') { footNote.textContent = ''; footNote.dataset.kind = ''; }
   }
   resetAllBtn.addEventListener('click', () => {
     if (!armed) {
       armed = true;
+      clearTimeout(noteTimer);
       resetAllBtn.classList.add('is-armed');
-      resetAllBtn.firstChild.textContent = 'Confirm?';
-      say('Click again to restore every setting to its default (your name is kept)', 'warn');
-      armTimer = setTimeout(disarm, 3500);
+      resetAllBtn.textContent = 'Confirm reset';
+      footNote.dataset.kind = 'arm';
+      footNote.replaceChildren(doc.createTextNode('Your name is kept'));
+      armTimer = setTimeout(disarm, ARM_MS);
       return;
     }
     disarm();
     cancelCapture();
     for (const k of FIELD_KEYS) if (k !== 'name') settings.set(k, DEFAULTS[k]);
-    say('All settings restored to defaults', 'ok');
+    footNote.dataset.kind = 'done';
+    footNote.replaceChildren(icon(ICON_CHECK), doc.createTextNode('Settings reset'));
+    say('All settings are back to defaults', 'ok');
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => { if (footNote.dataset.kind === 'done') { footNote.textContent = ''; footNote.dataset.kind = ''; } }, 2500);
   });
   closeBtn.addEventListener('click', () => close());
   doneBtn.addEventListener('click', () => close());
-  overlay.addEventListener('pointerdown', (e) => {
-    downOnBackdrop = e.target === overlay;
-    if (capture && !(e.target.closest && e.target.closest('.ir-set-key'))) cancelCapture('Rebind cancelled');
-  });
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay && downOnBackdrop) close();
-    downOnBackdrop = false;
-  });
-  // Keep game input (window-level listeners) from seeing keys typed inside the panel. keyup is left
-  // alone so a key held when the panel opened is still released in the game.
+  scrim.addEventListener('click', () => close());
+  // Keep game input (window-level listeners) from seeing keys typed inside the sheet. keyup is left
+  // alone so a key held when the sheet opened is still released in the game.
   overlay.addEventListener('keydown', (e) => e.stopPropagation());
 
+  // --- window listeners while open ---
   function focusables() {
     return [...dialog.querySelectorAll('button, input, [tabindex]')].filter((el) =>
       !el.disabled && el.tabIndex >= 0 && !el.closest('[hidden]') && el.getClientRects().length > 0);
   }
-  function onKeyDown(e) {   // window, capture phase, only while open
+  function swallow(e) { e.preventDefault(); e.stopImmediatePropagation(); }
+  function onKeyDown(e) {   // window, capture phase
     if (capture) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
+      swallow(e);
       if (e.repeat) return;
       const code = e.code;
       if (code === 'Escape') { cancelCapture('Rebind cancelled'); return; }
@@ -1113,10 +1178,10 @@ export function createSettingsPanel(container, settings, options = {}) {
       applyCapture(code === 'Backspace' || code === 'Delete' ? null : code);
       return;
     }
-    if (e.code === 'Escape' || e.key === 'Escape') {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      close();
+    if (e.code === 'Escape' || e.key === 'Escape') { swallow(e); close(); return; }
+    if (e.code === 'KeyM' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && !isTyping(e.target)) {
+      swallow(e);
+      settings.set('muted', !settings.get('muted'));
       return;
     }
     if (e.key === 'Tab') {
@@ -1129,11 +1194,33 @@ export function createSettingsPanel(container, settings, options = {}) {
     }
   }
   function onKeyUp(e) {
-    if (swallowUp && e.code === swallowUp) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      swallowUp = null;
-    }
+    if (swallowUp && e.code === swallowUp) { swallow(e); swallowUp = null; }
+  }
+  // Mouse buttons bind while a slot is capturing. The click that started the capture already
+  // happened, so the next mousedown is the one that binds; its click / contextmenu are eaten.
+  function onPointerDown(e) {
+    if (e.pointerType !== 'touch') return;
+    lastTouchAt = Date.now();
+    if (capture) cancelCapture('Rebind cancelled');   // no mouse on a tap
+  }
+  function onMouseDown(e) {
+    if (!capture) { eatMouse = false; clearTimeout(eatTimer); return; }
+    swallow(e);
+    if ((e.sourceCapabilities && e.sourceCapabilities.firesTouchEvents) || Date.now() - lastTouchAt < 1000) return;
+    const code = MOUSE_CODES[e.button];
+    if (!code) return;              // back / forward buttons: keep waiting
+    eatMouse = true;
+    clearTimeout(eatTimer);
+    applyCapture(code);
+  }
+  function onMouseUp(e) {
+    if (!eatMouse) return;
+    swallow(e);
+    clearTimeout(eatTimer);
+    eatTimer = setTimeout(() => { eatMouse = false; }, 400);   // contextmenu fires after mouseup on Windows
+  }
+  function onEat(e) {             // click, auxclick, contextmenu
+    if (capture || eatMouse) swallow(e);
   }
   function onFocusIn(e) {
     if (open_ && !overlay.contains(e.target)) {
@@ -1143,21 +1230,38 @@ export function createSettingsPanel(container, settings, options = {}) {
   }
   function onBlur() { cancelCapture(); }
 
+  const WIN_EVENTS = [['keydown', onKeyDown], ['keyup', onKeyUp], ['pointerdown', onPointerDown], ['mousedown', onMouseDown],
+    ['mouseup', onMouseUp], ['click', onEat], ['auxclick', onEat], ['contextmenu', onEat]];
+  function listen(on) {
+    for (const [type, fn] of WIN_EVENTS) win[on ? 'addEventListener' : 'removeEventListener'](type, fn, true);
+    win[on ? 'addEventListener' : 'removeEventListener']('blur', onBlur);
+    doc[on ? 'addEventListener' : 'removeEventListener']('focusin', onFocusIn);
+  }
+
   function notify(isOpen) {
     try { container.dispatchEvent(new win.CustomEvent('ir-settings', { bubbles: true, detail: { open: isOpen } })); } catch { /* ignore */ }
     const cb = isOpen ? opts.onOpen : opts.onClose;
     if (typeof cb === 'function') { try { cb(); } catch (err) { console.error(err); } }
   }
-  function open() {
-    if (disposed || open_) return;
+  function reducedMotion() {
+    try { return !!(win.matchMedia && win.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch { return false; }
+  }
+  /** open(tab?) - tab: 'audio' | 'video' | 'controls' | 'gameplay'. Switches tab when already open. */
+  function open(tab) {
+    if (disposed) return;
+    const want = TAB_KEYS.includes(tab) ? tab : null;
+    if (open_) { if (want) selectTab(want, true); return; }
     open_ = true;
+    if (want) activeTab = want;
+    clearTimeout(hideTimer);
     lastFocus = doc.activeElement;
     sync();
+    idle();
+    overlay.classList.remove('is-closing', 'is-open');
     overlay.hidden = false;
-    win.addEventListener('keydown', onKeyDown, true);
-    win.addEventListener('keyup', onKeyUp, true);
-    win.addEventListener('blur', onBlur);
-    doc.addEventListener('focusin', onFocusIn);
+    void overlay.offsetWidth;          // start the slide from the closed position
+    overlay.classList.add('is-open');
+    listen(true);
     selectTab(activeTab, true);
     notify(true);
   }
@@ -1168,16 +1272,22 @@ export function createSettingsPanel(container, settings, options = {}) {
     swallowUp = null;
     disarm();
     clearTimeout(statusTimer);
-    statusEl.textContent = '';
-    overlay.hidden = true;
-    win.removeEventListener('keydown', onKeyDown, true);
-    win.removeEventListener('keyup', onKeyUp, true);
-    win.removeEventListener('blur', onBlur);
-    doc.removeEventListener('focusin', onFocusIn);
+    syncKeys();
+    listen(false);
+    eatMouse = false;
+    overlay.classList.remove('is-open');
+    clearTimeout(hideTimer);
+    if (reducedMotion()) overlay.hidden = true;
+    else {
+      overlay.classList.add('is-closing');
+      hideTimer = setTimeout(() => { overlay.hidden = true; overlay.classList.remove('is-closing'); }, 130);
+    }
     const back = lastFocus;
     lastFocus = null;
     if (back && back.isConnected && typeof back.focus === 'function' && back !== doc.body) {
       try { back.focus({ preventScroll: true }); } catch { /* ignore */ }
+    } else if (overlay.contains(doc.activeElement)) {
+      try { doc.activeElement.blur(); } catch { /* ignore */ }
     }
     notify(false);
   }
@@ -1186,8 +1296,7 @@ export function createSettingsPanel(container, settings, options = {}) {
     close();
     disposed = true;
     unsubscribe();
-    clearTimeout(statusTimer);
-    clearTimeout(armTimer);
+    for (const t of [statusTimer, armTimer, noteTimer, hideTimer, eatTimer]) clearTimeout(t);
     for (const t of flashTimers) clearTimeout(t);
     flashTimers.clear();
     overlay.remove();

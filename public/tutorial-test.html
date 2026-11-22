@@ -3,67 +3,114 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ICE RIOT · tutorial test</title>
+<title>Ice Riot · tutorial test</title>
+<link rel="icon" href="data:,">
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --ground: #0A0F1C; --surface: #111829; --surface-2: #172034; --surface-3: #1E2940;
+    --hairline: #253049; --hairline-strong: #34425F; --ink: #E8EDF5; --ink-2: #A1ACC0; --ink-3: #6A7590;
+    --ice: #DCEAF6; --on-ice: #0A0F1C; --focus: #E8EDF5; --turbo: #7CC4FF; --good: #3FD98A; --warn: #F2C14E;
+    --goal: #FF4B3E; --fire: #FF8A2A; --r-sm: 6px; --r-md: 10px; --r-lg: 16px;
+    --f-ui: Bahnschrift, "DIN Alternate", "Segoe UI", sans-serif;
+    --f-mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; background: #0b0e16; color: #dfe6f5; font: 13px/1.35 "Segoe UI", system-ui, sans-serif; }
-  header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 8px 12px; background: #141a28; border-bottom: 1px solid #263048; }
-  header h1 { margin: 0; font: italic 900 17px/1 "Bahnschrift", "Arial Narrow", Impact, sans-serif; letter-spacing: .04em; color: #ffd400; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font: 13px/18px var(--f-ui); }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--hairline); }
+  header h1 { margin: 0; font-size: 15px; line-height: 18px; font-weight: 700; }
   .grp { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-  .grp > span { color: #8d9ab8; margin-right: 2px; }
-  button, label.tog { font: inherit; color: #dfe6f5; background: #222b40; border: 1px solid #36425f; border-radius: 4px; padding: 3px 8px; cursor: pointer; }
-  button:hover { background: #2c3752; }
-  button.on, input:checked + span { color: #111; background: #ffd400; border-color: #ffd400; }
-  .dev input { display: none; }
-  .dev span { display: inline-block; padding: 3px 9px; border: 1px solid #36425f; border-radius: 4px; background: #222b40; cursor: pointer; }
-  label.tog { display: inline-flex; gap: 4px; align-items: center; }
-  main { padding: 10px 12px; }
-  #stage { position: relative; width: 100%; max-width: calc((100vh - 130px) * 16 / 9); aspect-ratio: 16 / 9; margin: 0 auto; overflow: hidden;
-    background: radial-gradient(ellipse at 50% 40%, #1d2a44, #070910 75%); border: 1px solid #263048; border-radius: 6px; }
+  .grp > span { color: var(--ink-3); margin-right: 4px; font-size: 12px; }
+  button, select, label.tog, .dev label span {
+    font: inherit; font-size: 12px; color: var(--ink-2); background: transparent; border: 1px solid var(--hairline-strong);
+    border-radius: var(--r-sm); padding: 3px 9px; cursor: pointer;
+  }
+  /* no native controls: a select with its own chevron, a checkbox drawn like the settings sheet's */
+  select { appearance: none; -webkit-appearance: none; padding-right: 24px;
+    background: var(--surface-2) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23A1ACC0' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>") no-repeat right 8px center; }
+  select option { background: var(--surface); color: var(--ink); }
+  label.tog input[type=checkbox] { appearance: none; -webkit-appearance: none; flex: none; width: 14px; height: 14px; margin: 0;
+    border: 1px solid var(--hairline-strong); border-radius: 4px; background: var(--ground); display: grid; place-content: center; cursor: pointer; }
+  label.tog input[type=checkbox]:checked { background: var(--ice); border-color: var(--ice); }
+  label.tog input[type=checkbox]:checked::after { content: ""; width: 7px; height: 3.5px; margin-top: -2px; border: solid var(--on-ice); border-width: 0 0 2px 2px; transform: rotate(-45deg); }
+  button:hover, .dev label span:hover { color: var(--ink); }
+  button.on, .dev input:checked + span { color: var(--on-ice); background: var(--ice); border-color: var(--ice); }
+  button:focus-visible, select:focus-visible, .dev input:focus-visible + span, label.tog:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .dev label { display: inline-flex; }
+  .dev input { position: absolute; opacity: 0; pointer-events: none; }
+  label.tog { display: inline-flex; gap: 5px; align-items: center; }
+  main { padding: 12px 16px; }
+  #stage { position: relative; width: 100%; max-width: calc((100vh - 140px) * 16 / 9); aspect-ratio: 16 / 9; margin: 0 auto; overflow: hidden;
+    background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-md); }
   #stage.phone-p { max-width: 390px; aspect-ratio: 390 / 760; }
-  #stage.phone-l { max-width: 760px; aspect-ratio: 760 / 390; }
+  #stage.phone-l { max-width: 844px; aspect-ratio: 844 / 390; }
+  body.full header, body.full #log, body.full #gallery { display: none; }
+  body.full main { padding: 0; }
+  body.full #stage { position: fixed; inset: 0; max-width: none; aspect-ratio: auto; border: 0; border-radius: 0; }
   #rink { position: absolute; inset: 0; width: 100%; height: 100%; }
-  #hud { position: absolute; left: 10px; top: 8px; right: 10px; display: flex; justify-content: space-between; gap: 10px; pointer-events: none;
-    font: 600 12px/1.3 ui-monospace, Consolas, monospace; color: #c9d4ee; text-shadow: 0 1px 2px #000; }
-  #hud b { color: #ffd400; }
-  #log { max-height: 7.5em; overflow: auto; margin: 8px auto 0; max-width: 1100px; font: 12px/1.4 ui-monospace, Consolas, monospace; color: #9fb0d4; white-space: pre-wrap; }
-  #gallery h2 { font: italic 900 16px/1 "Bahnschrift", "Arial Narrow", Impact, sans-serif; color: #ffd400; margin: 22px 0 10px; letter-spacing: .04em; }
-  .gal { display: grid; grid-template-columns: 110px repeat(3, minmax(0, 1fr)); gap: 10px; align-items: center; max-width: 1400px; margin: 0 auto; }
-  .gal .hd { color: #8d9ab8; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
-  .gal .cell { display: flex; justify-content: center; padding: 14px 6px; border-radius: 6px; background: radial-gradient(ellipse at 50% 30%, #1d2a44, #0a0d15); min-height: 110px; align-items: center; }
+  #hud { position: absolute; left: 12px; top: 10px; right: 12px; display: flex; justify-content: space-between; gap: 10px; pointer-events: none;
+    font: 12px/16px var(--f-mono); color: var(--ink-2); }
+  #hud b { color: var(--ink); font-weight: 600; }
+  #log { max-height: 7.5em; overflow: auto; margin: 10px auto 0; max-width: 1100px; font: 12px/16px var(--f-mono); color: var(--ink-3); white-space: pre-wrap; }
+  #gallery { max-width: 1400px; margin: 0 auto; }
+  #gallery h2 { font-size: 15px; line-height: 18px; font-weight: 700; margin: 24px 0 10px; }
+  .gtabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  .gal { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .gal .cell { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 26px 12px 18px;
+    border-radius: var(--r-md); background: #E3E9F0; min-height: 112px; }
+  .gal .cell .tag { position: absolute; left: 10px; top: 6px; font: 11px/14px var(--f-mono); color: #4A556E; }
   /* static copies of the prompt: same look, normal flow */
-  .gal .cell .ir-tut-root { position: relative; left: auto; bottom: auto; transform: none; opacity: 1; visibility: visible; max-width: 100%; }
-  @media (max-width: 760px) { .gal { grid-template-columns: repeat(1, minmax(0, 1fr)); } .gal .hd.dv { display: none; } }
+  .gal .cell .ir-tut-root { position: relative; left: auto; bottom: auto; top: auto; transform: none; opacity: 1; visibility: visible; max-width: 100%; }
+  @media (max-width: 900px) { .gal { grid-template-columns: minmax(0, 1fr); } }
 </style>
 </head>
 <body>
 <header>
-  <h1>ICE RIOT · TUTORIAL</h1>
-  <div class="grp dev" id="devs"><span>device</span></div>
-  <div class="grp" id="scen"><span>scenario</span></div>
+  <h1>Ice Riot · tutorial hints</h1>
+  <div class="grp dev" id="devs"><span>Device</span></div>
+  <div class="grp"><span>Bindings</span>
+    <select id="bind" title="what keyLabel(button) returns (the primary binding from settings)">
+      <option value="mouse">Mouse + keys (defaults)</option>
+      <option value="keys">Keys only (J K L)</option>
+    </select>
+  </div>
+  <div class="grp" id="scen"><span>Scenario</span></div>
   <div class="grp">
-    <button id="all">play all</button>
-    <button id="resetBtn" title="tutorial.reset(): clear persisted show counts">reset counts</button>
-    <label class="tog" title="one long-lived tutorial with real limits / spacing, counts in localStorage"><input type="checkbox" id="persist"> persist</label>
-    <label class="tog"><input type="checkbox" id="enabled" checked> enabled</label>
-    <select id="frame" title="stage shape"><option value="">16:9</option><option value="phone-p">phone portrait</option><option value="phone-l">phone landscape</option></select>
+    <button id="all">Play all</button>
+    <button id="resetBtn" title="tutorial.reset(): clear persisted show counts">Reset counts</button>
+    <label class="tog" title="one long-lived tutorial with real limits / spacing, counts in localStorage"><input type="checkbox" id="persist"> Persist</label>
+    <label class="tog"><input type="checkbox" id="enabled" checked> Enabled</label>
+    <select id="frame" title="stage shape"><option value="">16:9</option><option value="phone-p">Phone portrait</option><option value="phone-l">Phone landscape</option></select>
   </div>
 </header>
 <main>
   <div id="stage"><canvas id="rink"></canvas><div id="hud"><span id="hudL"></span><span id="hudR"></span></div></div>
   <div id="log"></div>
-  <section id="gallery"><h2>ALL HINTS × DEVICES (static)</h2><div class="gal" id="gal"></div></section>
+  <section id="gallery">
+    <h2>Every hint, every input (static)</h2>
+    <div class="gtabs" id="gtabs"></div>
+    <div class="gal" id="gal"></div>
+  </section>
 </main>
 <script type="module">
-import { createTutorial, hintMarkup, injectTutorialStyle, HINT_IDS, DEVICES } from './tutorial.js';
+import { createTutorial, hintMarkup, hintKind, injectTutorialStyle, HINT_IDS, DEVICES } from './tutorial.js';
 import { PHASE, PSTATE, EVENT, RINK, TEAMS, glassPanels, nearestGlassPanel } from '/shared/constants.js';
 
+// URL: ?device=keyboard|gamepad|touch  &bind=mouse|keys  &scenario=<id>  &shot=<id> (freeze on that hint)
+//      &frame=phone-p|phone-l  &full=1 (stage fills the window, as in game)  &gallery=keyboard|mouse|gamepad|touch|all
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const ME = 1;
 const STEP = 1 / 30;
 const TEST_KEY = 'iceRiot.tutorial.test';
+
+// What extras.js passes as keyLabel: the primary code of settings.keys[button].
+const BINDINGS = {
+  mouse: { shoot: 'Mouse0', pass: 'Mouse2', action: 'KeyL', turbo: 'ShiftLeft' },
+  keys: { shoot: 'KeyJ', pass: 'KeyK', action: 'KeyL', turbo: 'ShiftLeft' },
+};
+let bind = BINDINGS[params.get('bind')] ? params.get('bind') : 'mouse';
+const keyLabelFor = (b) => (button) => (button === 'move' ? null : BINDINGS[b][button] ?? null);
 
 // ---------------------------------------------------------------------------------------------
 // synthetic Snapshot-shaped states
@@ -90,7 +137,7 @@ const puckAt = (s, x, z) => { s.k.o = -1; s.k.x = x; s.k.z = z; };
 // Each scenario: frame(t, at) -> { state, events }. at(T) is true on the frame that crosses time T.
 // pre: hints treated as already used up (isolated mode) so the scenario's own hint is the one shown.
 const SCENARIOS = [
-  { id: 'move', label: 'game start', dur: 7, pre: [], frame(t, at) {
+  { id: 'move', label: 'Game start', dur: 7, pre: [], frame(t, at) {
     const s = baseState(), ev = [];
     if (t < 1.6) { s.ph = PHASE.FACEOFF; s.phT = 1.6 - t; put(s, 0, -1.3, 0); put(s, 4, 1.3, 0); puckAt(s, 0, 0); }
     else {
@@ -102,7 +149,7 @@ const SCENARIOS = [
     if (at(1.6)) ev.push({ type: EVENT.FACEOFF, x: 0, z: 0 });
     return { state: s, events: ev };
   } },
-  { id: 'shoot', label: 'first puck', dur: 6, pre: ['move'], frame(t, at) {
+  { id: 'shoot', label: 'First puck', dur: 6, pre: ['move'], frame(t, at) {
     const s = baseState(), ev = [];
     put(s, 0, -9 + Math.max(0, t - 1) * 4, 0);
     if (t < 1) puckAt(s, mix(5, -8, t), mix(3, 0, t));
@@ -110,7 +157,7 @@ const SCENARIOS = [
     else { const u = (t - 3.5) / 0.5; puckAt(s, mix(s.p[0].x + 1, 26.4, u), mix(0, 0.6, u)); if (at(3.5)) ev.push({ type: EVENT.SHOT, by: 0, power: 0.6, kind: 'wrist' }); }
     return { state: s, events: ev };
   } },
-  { id: 'pass', label: 'open teammate', dur: 6, pre: ['move', 'shoot'], frame(t, at) {
+  { id: 'pass', label: 'Open teammate', dur: 6, pre: ['move', 'shoot'], frame(t, at) {
     const s = baseState(), ev = [];
     put(s, 0, -12 + t * 2, 1); put(s, 1, 2 + t, 6); put(s, 2, -16, -6);
     put(s, 4, 13, -5); put(s, 5, 15, 7); put(s, 6, 18, 0);
@@ -122,7 +169,7 @@ const SCENARIOS = [
     }
     return { state: s, events: ev };
   } },
-  { id: 'deke', label: 'defender ahead', dur: 6, pre: ['move', 'shoot'], frame(t, at) {
+  { id: 'deke', label: 'Defender ahead', dur: 6, pre: ['move', 'shoot'], frame(t, at) {
     const s = baseState(), ev = [];
     const mx = -10 + t * 3;
     put(s, 0, mx, 0.2); s.p[0].f = 0;
@@ -132,7 +179,7 @@ const SCENARIOS = [
     carry(s, 0);
     return { state: s, events: ev };
   } },
-  { id: 'onetimer', label: 'pass to me', dur: 5, pre: ['move'], frame(t, at) {
+  { id: 'onetimer', label: 'Pass to me', dur: 5, pre: ['move'], frame(t, at) {
     const s = baseState(), ev = [];
     put(s, 0, 15, -3); face(s, 0, 26.6, 0);
     put(s, 1, 5 + t * 1.5, 7); face(s, 1, 15, -3);
@@ -144,7 +191,7 @@ const SCENARIOS = [
     if (at(1.7)) ev.push({ type: EVENT.SHOT, by: 0, power: 1, kind: 'onetimer' });
     return { state: s, events: ev };
   } },
-  { id: 'check', label: 'defend carrier', dur: 6, pre: ['move'], frame(t, at) {
+  { id: 'check', label: 'Defend carrier', dur: 6, pre: ['move'], frame(t, at) {
     const s = baseState(), ev = [];
     const cx = 2 - Math.min(t, 3.4) * 3;
     put(s, 4, cx, 1); s.p[4].f = Math.PI;
@@ -155,7 +202,7 @@ const SCENARIOS = [
     if (at(3.4)) ev.push({ type: EVENT.HIT, by: 0, target: 4, power: 0.6, big: false, x: cx, z: 1 });
     return { state: s, events: ev };
   } },
-  { id: 'glass', label: 'carrier on boards', dur: 6, pre: ['move', 'check'], frame(t, at) {
+  { id: 'glass', label: 'Carrier on boards', dur: 6, pre: ['move', 'check'], frame(t, at) {
     const s = baseState(), ev = [];
     const cx = 4 - Math.min(t, 3) * 3;
     put(s, 4, cx, -11.6); s.p[4].f = Math.PI;
@@ -168,7 +215,7 @@ const SCENARIOS = [
     }
     return { state: s, events: ev };
   } },
-  { id: 'switch', label: 'too far away', dur: 6, pre: ['move'], frame(t, at) {
+  { id: 'switch', label: 'Too far away', dur: 6, pre: ['move'], frame(t, at) {
     const s = baseState(), ev = [];
     puckAt(s, mix(-19, -24, t / 4), mix(8, 4, t / 4));
     put(s, 0, 12, -2); face(s, 0, -20, 4);
@@ -178,14 +225,14 @@ const SCENARIOS = [
     if (at(3)) ev.push({ type: EVENT.SWITCH, client: ME, from: 0, to: 1 });
     return { state: s, events: ev };
   } },
-  { id: 'fire', label: 'catch fire', dur: 6, pre: ['move'], frame(t, at) {
+  { id: 'fire', label: 'Catch fire', dur: 6, pre: ['move'], frame(t, at) {
     const s = baseState(), ev = [];
     put(s, 0, 18 - t, 3); face(s, 0, 0, 0); s.sc = [3, 1];
     if (t >= 0.5) s.p[0].fire = 1;
     if (at(0.5)) ev.push({ type: EVENT.FIRE, player: 0, on: true });
     return { state: s, events: ev };
   } },
-  { id: 'overtime', label: 'overtime', dur: 6, pre: ['move'], frame(t, at) {
+  { id: 'overtime', label: 'Overtime', dur: 6, pre: ['move'], frame(t, at) {
     const s = baseState(), ev = [];
     s.per = 4; s.clk = 120; s.sc = [2, 2];
     if (t < 1.6) { s.ph = PHASE.FACEOFF; s.phT = 1.6 - t; put(s, 0, -1.3, 0); put(s, 4, 1.3, 0); puckAt(s, 0, 0); }
@@ -205,15 +252,17 @@ const memStorage = (seed) => {
 };
 let device = DEVICES.includes(params.get('device')) ? params.get('device') : 'keyboard';
 let tut = null, persistent = null;
+// keyLabel reads the current binding set, so a binding change applies to the next hint shown
+const liveKeyLabel = (button, action) => keyLabelFor(bind)(button, action);
 function tutorialFor(sc) {
   if ($('persist').checked) {
     if (tut && tut !== persistent) tut.dispose();
-    persistent ||= createTutorial({ container: $('stage'), storageKey: TEST_KEY, device });
+    persistent ||= createTutorial({ container: $('stage'), storageKey: TEST_KEY, device, keyLabel: liveKeyLabel });
     tut = persistent;
   } else {
     if (tut) tut.dispose();
     persistent = null;
-    tut = createTutorial({ container: $('stage'), storage: memStorage(sc.pre), storageKey: TEST_KEY, device });
+    tut = createTutorial({ container: $('stage'), storage: memStorage(sc.pre), storageKey: TEST_KEY, device, keyLabel: liveKeyLabel });
   }
   tut.setDevice(device);
   tut.setEnabled($('enabled').checked);
@@ -233,7 +282,7 @@ function start(sc, queue = []) {
   lastVisible = null;
   tutorialFor(sc);
   for (const b of document.querySelectorAll('#scen button')) b.classList.toggle('on', b.dataset.id === sc.id);
-  log(`▶ ${sc.id} (${device})`);
+  log(`> ${sc.id} (${device}, ${bind})`);
 }
 function step(dt) {
   if (!run) return;
@@ -244,7 +293,7 @@ function step(dt) {
   run.prevT = run.t;
   const vis = tut.update(state, events, { myId: ME }, dt);
   for (const e of events) log(`  ${run.t.toFixed(2)}s event ${e.type}${e.by != null ? ' by ' + e.by : ''}${e.to != null ? ' to ' + e.to : ''}`);
-  if (vis !== lastVisible) { log(`  ${run.t.toFixed(2)}s hint ${vis ? 'SHOW ' + vis : 'hide ' + lastVisible}`); lastVisible = vis; }
+  if (vis !== lastVisible) { log(`  ${run.t.toFixed(2)}s hint ${vis ? 'show ' + vis : 'hide ' + lastVisible}`); lastVisible = vis; }
   lastFrame = { state, vis, t: run.t, sc: sc.id };
   if (run.t >= sc.dur) {
     const next = run.queue.shift();
@@ -260,6 +309,7 @@ const hex = (n) => '#' + n.toString(16).padStart(6, '0');
 function draw() {
   const cv = $('rink'), g = cv.getContext('2d');
   const W = cv.clientWidth, H = cv.clientHeight, dpr = Math.min(2, devicePixelRatio || 1);
+  if (W < 80 || H < 80) return;   // hidden (gallery mode) or too small to sketch
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, W, H);
@@ -269,48 +319,49 @@ function draw() {
   const X = (x) => ox + x * sc, Z = (z) => oz + z * sc;
   // ice
   g.beginPath(); g.roundRect(X(-L), Z(-Wd), 2 * L * sc, 2 * Wd * sc, RINK.cornerRadius * sc);
-  g.fillStyle = '#dfeaf3'; g.fill(); g.lineWidth = 4; g.strokeStyle = '#f5f7fb'; g.stroke();
+  g.fillStyle = '#E3E9F0'; g.fill(); g.lineWidth = 4; g.strokeStyle = '#F5F7FB'; g.stroke();
   g.save(); g.clip();
   const vline = (x, c, w) => { g.beginPath(); g.moveTo(X(x), Z(-Wd)); g.lineTo(X(x), Z(Wd)); g.strokeStyle = c; g.lineWidth = w; g.stroke(); };
-  vline(0, '#d0202f', 4); vline(-RINK.blueLineX, '#1f5fd6', 4); vline(RINK.blueLineX, '#1f5fd6', 4);
-  vline(-RINK.goalLineX, '#d0202f', 1.5); vline(RINK.goalLineX, '#d0202f', 1.5);
-  g.beginPath(); g.arc(X(0), Z(0), RINK.centerCircleR * sc, 0, Math.PI * 2); g.strokeStyle = '#1f5fd6'; g.lineWidth = 1.5; g.stroke();
+  vline(0, '#FF4B5E', 4); vline(-RINK.blueLineX, '#3C82E6', 4); vline(RINK.blueLineX, '#3C82E6', 4);
+  vline(-RINK.goalLineX, '#FF4B5E', 1.5); vline(RINK.goalLineX, '#FF4B5E', 1.5);
+  g.beginPath(); g.arc(X(0), Z(0), RINK.centerCircleR * sc, 0, Math.PI * 2); g.strokeStyle = '#3C82E6'; g.lineWidth = 1.5; g.stroke();
   for (const sx of [-1, 1]) {
     g.beginPath(); g.arc(X(sx * RINK.goalLineX), Z(0), RINK.creaseRadius * sc, sx > 0 ? Math.PI / 2 : -Math.PI / 2, sx > 0 ? Math.PI * 1.5 : Math.PI / 2);
     g.fillStyle = 'rgba(80,150,255,.35)'; g.fill();
-    g.fillStyle = '#c8102e'; g.fillRect(X(sx > 0 ? RINK.goalLineX : -RINK.goalLineX - RINK.goalDepth), Z(-RINK.goalHalfWidth), RINK.goalDepth * sc, 2 * RINK.goalHalfWidth * sc);
+    g.fillStyle = '#C8102E'; g.fillRect(X(sx > 0 ? RINK.goalLineX : -RINK.goalLineX - RINK.goalDepth), Z(-RINK.goalHalfWidth), RINK.goalDepth * sc, 2 * RINK.goalHalfWidth * sc);
   }
   g.restore();
   const st = lastFrame && lastFrame.state;
   if (!st) return;
-  for (const i of st.gl || []) { const p = PANELS[i]; g.beginPath(); g.arc(X(p.x), Z(p.z), 9, 0, Math.PI * 2); g.fillStyle = 'rgba(255,80,40,.9)'; g.fill(); g.fillStyle = '#fff'; g.font = 'bold 10px sans-serif'; g.fillText('GLASS', X(p.x) - 15, Z(p.z) - 12); }
+  for (const i of st.gl || []) { const p = PANELS[i]; g.beginPath(); g.arc(X(p.x), Z(p.z), 9, 0, Math.PI * 2); g.fillStyle = 'rgba(255,80,40,.9)'; g.fill(); g.fillStyle = '#0A0F1C'; g.font = '600 11px Bahnschrift, sans-serif'; g.fillText('Glass', X(p.x) - 14, Z(p.z) - 12); }
   const r = Math.max(6, PLAYER_R * sc);
   for (const p of st.p) {
     const T = TEAMS[st.teams[p.tm]];
     const x = X(p.x), z = Z(p.z);
-    if (p.fire) { g.beginPath(); g.arc(x, z, r + 7, 0, Math.PI * 2); g.fillStyle = 'rgba(255,110,0,.55)'; g.fill(); }
+    if (p.fire) { g.beginPath(); g.arc(x, z, r + 7, 0, Math.PI * 2); g.fillStyle = 'rgba(255,138,42,.55)'; g.fill(); }
     g.beginPath();
     if (p.g) g.rect(x - r, z - r, 2 * r, 2 * r); else g.arc(x, z, r, 0, Math.PI * 2);
     g.fillStyle = p.s === PSTATE.DOWN ? '#777' : hex(T.colors.primary); g.fill();
-    g.lineWidth = p.c === ME ? 3.5 : 1.5; g.strokeStyle = p.c === ME ? '#fff' : hex(T.colors.secondary); g.stroke();
+    g.lineWidth = p.c === ME ? 3.5 : 1.5; g.strokeStyle = p.c === ME ? '#0A0F1C' : hex(T.colors.secondary); g.stroke();
     g.beginPath(); g.moveTo(x, z); g.lineTo(x + Math.cos(p.f) * r * 1.9, z + Math.sin(p.f) * r * 1.9); g.strokeStyle = '#111'; g.lineWidth = 2; g.stroke();
-    g.fillStyle = '#111'; g.font = `bold ${Math.round(r * 0.9)}px sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(p.n), x, z + 0.5);
-    if (p.c === ME) { g.fillStyle = '#fff'; g.font = 'bold 11px sans-serif'; g.fillText('YOU', x, z - r - 9); }
+    g.fillStyle = '#111'; g.font = `700 ${Math.round(r * 0.9)}px Bahnschrift, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(p.n), x, z + 0.5);
+    if (p.c === ME) { g.fillStyle = '#0A0F1C'; g.font = '700 12px Bahnschrift, sans-serif'; g.fillText('You', x, z - r - 9); }
   }
   g.beginPath(); g.arc(X(st.k.x), Z(st.k.z), Math.max(3, 0.25 * sc), 0, Math.PI * 2); g.fillStyle = '#000'; g.fill();
   g.textAlign = 'left'; g.textBaseline = 'alphabetic';
   const phName = Object.keys(PHASE).find((k) => PHASE[k] === st.ph) || '?';
-  $('hudL').innerHTML = `scenario <b>${lastFrame.sc}</b> · t=${lastFrame.t.toFixed(2)}s · ${phName} · per ${st.per}`;
-  $('hudR').innerHTML = `device <b>${device}</b> · hint <b>${lastFrame.vis || '-'}</b>`;
+  $('hudL').innerHTML = `scenario <b>${lastFrame.sc}</b> · t=${lastFrame.t.toFixed(2)}s · ${phName.toLowerCase()} · per ${st.per}`;
+  $('hudR').innerHTML = `${device} · ${bind} · hint <b>${lastFrame.vis || '-'}</b>`;
 }
 const PLAYER_R = 0.75;
 
 // ---------------------------------------------------------------------------------------------
 // controls
 
+const cap = (s) => s[0].toUpperCase() + s.slice(1);
 for (const d of DEVICES) {
   const l = document.createElement('label');
-  l.innerHTML = `<input type="radio" name="dev" value="${d}"${d === device ? ' checked' : ''}><span>${d}</span>`;
+  l.innerHTML = `<input type="radio" name="dev" value="${d}"${d === device ? ' checked' : ''}><span>${cap(d)}</span>`;
   l.querySelector('input').addEventListener('change', () => { device = d; if (tut) tut.setDevice(d); log(`device -> ${d}`); });
   $('devs').appendChild(l);
 }
@@ -320,22 +371,36 @@ for (const sc of SCENARIOS) {
   b.addEventListener('click', () => start(sc));
   $('scen').appendChild(b);
 }
+$('bind').value = bind;
+$('bind').addEventListener('change', (e) => { bind = e.target.value; log(`bindings -> ${bind}`); if (run) start(run.sc, run.queue); });
 $('all').addEventListener('click', () => { const q = SCENARIOS.slice(); start(q.shift(), q); });
 $('resetBtn').addEventListener('click', () => { if (persistent) persistent.reset(); try { localStorage.removeItem(TEST_KEY); } catch {} log('counts reset'); });
 $('enabled').addEventListener('change', (e) => { if (tut) tut.setEnabled(e.target.checked); });
 $('persist').addEventListener('change', () => { log(`persist ${$('persist').checked ? 'on (real limits, localStorage)' : 'off (fresh instance per scenario)'}`); });
 $('frame').addEventListener('change', (e) => { $('stage').className = e.target.value; });
 
-// gallery: every hint on every device, static
+// gallery: every hint for one input variant, static
 injectTutorialStyle(document);
-{
-  const gal = $('gal');
-  gal.insertAdjacentHTML('beforeend', '<div class="hd"></div>' + DEVICES.map((d) => `<div class="hd dv">${d}</div>`).join(''));
-  for (const id of HINT_IDS) {
-    gal.insertAdjacentHTML('beforeend', `<div class="hd">${id}</div>` +
-      DEVICES.map((d) => `<div class="cell"><div class="ir-tut-root ir-tut-on">${hintMarkup(id, d)}</div></div>`).join(''));
-  }
+const VARIANTS = [
+  { id: 'keyboard', label: 'Keyboard', dev: 'keyboard', kl: keyLabelFor('keys') },
+  { id: 'mouse', label: 'Mouse + keys', dev: 'keyboard', kl: keyLabelFor('mouse') },
+  { id: 'gamepad', label: 'Gamepad', dev: 'gamepad', kl: null },
+  { id: 'touch', label: 'Touch', dev: 'touch', kl: null },
+];
+function renderGallery(which) {
+  const list = which === 'all' ? VARIANTS : VARIANTS.filter((v) => v.id === which);
+  $('gal').innerHTML = HINT_IDS.map((id) => `<div class="cell"><span class="tag">${id}</span>` + list.map((v) =>
+    `<div class="ir-tut-root ir-tut-on ir-tut-k-${hintKind(id)}">${hintMarkup(id, v.dev, v.kl)}</div>`).join('') + '</div>').join('');
+  for (const b of document.querySelectorAll('#gtabs button')) b.classList.toggle('on', b.dataset.v === which);
 }
+for (const v of [...VARIANTS, { id: 'all', label: 'All' }]) {
+  const b = document.createElement('button');
+  b.textContent = v.label; b.dataset.v = v.id;
+  b.addEventListener('click', () => renderGallery(v.id));
+  $('gtabs').appendChild(b);
+}
+const galSel = params.get('gallery');
+renderGallery(VARIANTS.some((v) => v.id === galSel) || galSel === 'all' ? galSel : 'mouse');
 
 // ---------------------------------------------------------------------------------------------
 // main loop, or ?shot=<scenario>: step synchronously until that hint is up, then freeze (screenshots)
@@ -343,7 +408,8 @@ injectTutorialStyle(document);
 const shot = params.get('shot');
 const frameSel = params.get('frame');
 if (frameSel) { $('stage').className = frameSel; $('frame').value = frameSel; }
-if (params.get('gallery')) $('gallery').scrollIntoView();
+if (params.get('full')) document.body.classList.add('full');
+if (galSel) { $('stage').style.display = 'none'; $('log').style.display = 'none'; }
 const shotSc = SCENARIOS.find((s) => s.id === shot);
 if (shotSc) {
   start(shotSc);

@@ -278,7 +278,7 @@ export async function createLocalSession({
           // throwing out of the caller's rAF loop.
           console.error('ICE RIOT offline: sim crashed', err);
           session.backToLobby();
-          emit('err', { t: 'err', msg: `The game simulation crashed - back to the lobby (${err && err.message ? err.message : err})` });
+          emit('err', { t: 'err', msg: `The game simulation crashed, so you're back in the lobby (${err && err.message ? err.message : err})` });
           return { state: null, events };
         }
         if (acc < 0) acc = 0;

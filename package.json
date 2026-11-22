@@ -1,6 +1,6 @@
 {
   "name": "ice-riot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "ICE RIOT - original 3-on-3 arcade hockey for the browser, multiplayer over a Tailscale tailnet",
   "type": "module",
   "private": true,

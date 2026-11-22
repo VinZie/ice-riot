@@ -1,8 +1,13 @@
-// ICE RIOT - keyboard + gamepad input.
+// ICE RIOT - keyboard + mouse + gamepad input.
 //
 // poll() -> { mx, mz, b } in WORLD space (see shared/constants.js): screen right = +mx,
 // screen up = -mz, screen down = +mz. b is the BTN bitfield. Buttons tapped between two polls
-// are latched so a quick tap is never lost on high-refresh displays.
+// are latched so a quick tap (or click) is never lost on high-refresh displays.
+//
+// Mouse buttons are binding codes like keys: 'Mouse0' (left), 'Mouse1' (middle), 'Mouse2' (right),
+// resolved through the same keymap (settings.keyFor). They only act while a game is active, input
+// is not suppressed, and the press lands on the game itself (#game / #fallback2d canvas or the bare
+// #ui overlay) - never on a button, field, menu, sheet or chat. Touch is left to touch.js.
 
 import { BTN } from '/shared/constants.js';
 
@@ -12,9 +17,10 @@ const MOVE_KEYS = {
   KeyA: 'left', ArrowLeft: 'left',
   KeyD: 'right', ArrowRight: 'right',
 };
+// Used until a keymap is set (mirrors settings.js DEFAULTS.keys).
 const BUTTON_KEYS = {
-  KeyJ: BTN.SHOOT, Space: BTN.SHOOT,
-  KeyK: BTN.PASS,
+  Mouse0: BTN.SHOOT, Space: BTN.SHOOT,
+  Mouse2: BTN.PASS, KeyK: BTN.PASS,
   KeyL: BTN.ACTION,
   ShiftLeft: BTN.TURBO, ShiftRight: BTN.TURBO,
 };
@@ -22,14 +28,32 @@ const DEADZONE = 0.2;
 const ACTION_BTN = { shoot: BTN.SHOOT, pass: BTN.PASS, action: BTN.ACTION, turbo: BTN.TURBO };
 const MOVE_ACTIONS = { up: 1, down: 1, left: 1, right: 1 };
 
+export const MOUSE_CODES = Object.freeze(['Mouse0', 'Mouse1', 'Mouse2']);   // by MouseEvent.button
+const MOUSE_MASK = { Mouse0: 1, Mouse1: 4, Mouse2: 2 };                       // MouseEvent.buttons bits
+const GAME_SURFACES = new Set(['game', 'fallback2d', 'ui']);
+const NOT_GAME = 'button, input, textarea, select, option, a, label, summary, [contenteditable], '
+  + '[role="button"], [role="dialog"], [role="menu"], .menu, [data-act]';
+const TOUCH_GRACE_MS = 1000;     // compatibility mouse events trail a touch by a few hundred ms
+
 export function isTypingTarget(el) {
   if (!el || el === document.body) return false;
   const tag = el.tagName;
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
 }
 
+/** 0 -> 'Mouse0', 1 -> 'Mouse1', 2 -> 'Mouse2', anything else -> null. */
+export function mouseCode(button) {
+  return MOUSE_CODES[button] || null;
+}
+
+/** True when a mouse press on `el` is meant for the game (canvas or the bare #ui overlay). */
+export function isGameSurface(el) {
+  if (!el || el.nodeType !== 1 || !GAME_SURFACES.has(el.id)) return false;
+  return !(typeof el.closest === 'function' && el.closest(NOT_GAME));
+}
+
 export function createInput(target = window) {
-  const down = new Set();        // currently held KeyboardEvent.code values
+  const down = new Set();        // currently held binding codes (keys and mouse buttons)
   let latched = 0;               // buttons pressed since the last poll
   let gameActive = false;        // only swallow game keys while a game is on screen
   let padIndex = -1;
@@ -39,6 +63,7 @@ export function createInput(target = window) {
   let keyFor = null;             // optional rebinding: code -> 'up'|'down'|'left'|'right'|'shoot'|'pass'|'action'|'turbo'|null
   let padLimit = Infinity;       // only read gamepads with index < padLimit (couch co-op reserves the rest)
   let suppressed = false;        // e.g. while typing in chat
+  let lastTouchAt = -Infinity;
 
   const moveOf = (code) => {
     if (keyFor) { const a = keyFor(code); return MOVE_ACTIONS[a] ? a : null; }
@@ -48,6 +73,7 @@ export function createInput(target = window) {
     if (keyFor) return ACTION_BTN[keyFor(code)] || 0;
     return BUTTON_KEYS[code] || 0;
   };
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
   function onKeyDown(e) {
     if (isTypingTarget(e.target) || suppressed) return;
@@ -65,16 +91,53 @@ export function createInput(target = window) {
     // Always release, even if unmapped now, so a rebind mid-hold can't leave a key stuck.
     if (down.delete(e.code) && gameActive && !isTypingTarget(e.target)) e.preventDefault();
   }
+
+  // --- mouse ---
+  function fromTouch(e) {
+    if (e.pointerType === 'touch') return true;
+    if (e.sourceCapabilities && e.sourceCapabilities.firesTouchEvents) return true;
+    return now() - lastTouchAt < TOUCH_GRACE_MS;
+  }
+  function onPointerDown(e) {
+    if (e.pointerType === 'touch') lastTouchAt = now();
+  }
+  function onMouseDown(e) {
+    const code = mouseCode(e.button);
+    if (!code || !gameActive || suppressed || fromTouch(e) || !isGameSurface(e.target)) return;
+    const bit = btnOf(code);
+    if (!bit && !moveOf(code)) return;
+    e.preventDefault();          // no focus change, text selection or middle-click autoscroll
+    down.add(code);
+    if (bit) latched |= bit;
+    state.usingPad = false;
+  }
+  function onMouseUp(e) {        // anywhere: a press that started on the game always ends
+    const code = mouseCode(e.button);
+    if (code) down.delete(code);
+  }
+  function onMouseMove(e) {      // a release outside the window shows up as a missing `buttons` bit
+    if (!down.size || typeof e.buttons !== 'number') return;
+    for (const c of MOUSE_CODES) if (down.has(c) && !(e.buttons & MOUSE_MASK[c])) down.delete(c);
+  }
+  function onContextMenu(e) {
+    if (gameActive && isGameSurface(e.target)) e.preventDefault();
+  }
+
   function clear() {
     down.clear();
     latched = 0;
   }
-  target.addEventListener('keydown', onKeyDown);
-  target.addEventListener('keyup', onKeyUp);
-  window.addEventListener('blur', clear);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) clear(); });
-  window.addEventListener('gamepadconnected', (e) => { if (padIndex < 0) padIndex = e.gamepad.index; });
-  window.addEventListener('gamepaddisconnected', (e) => { if (padIndex === e.gamepad.index) padIndex = -1; });
+  const onVisibility = () => { if (document.hidden) clear(); };
+  const onPadOn = (e) => { if (padIndex < 0) padIndex = e.gamepad.index; };
+  const onPadOff = (e) => { if (padIndex === e.gamepad.index) padIndex = -1; };
+  const LISTENERS = [
+    [target, 'keydown', onKeyDown], [target, 'keyup', onKeyUp],
+    [target, 'mousedown', onMouseDown], [window, 'mouseup', onMouseUp, true], [window, 'mousemove', onMouseMove, true],
+    [window, 'pointerdown', onPointerDown, true], [target, 'contextmenu', onContextMenu],
+    [window, 'blur', clear], [document, 'visibilitychange', onVisibility],
+    [window, 'gamepadconnected', onPadOn], [window, 'gamepaddisconnected', onPadOff],
+  ];
+  for (const [t, type, fn, cap] of LISTENERS) t.addEventListener(type, fn, !!cap);
 
   function readPad() {
     let pads;
@@ -89,7 +152,7 @@ export function createInput(target = window) {
   }
 
   function poll() {
-    // keyboard
+    // keyboard + mouse
     let kx = 0, kz = 0;
     for (const code of down) {
       const dir = moveOf(code);
@@ -157,6 +220,11 @@ export function createInput(target = window) {
     setKeymap(fn) { keyFor = typeof fn === 'function' ? fn : null; clear(); },
     setPadLimit(n) { padLimit = n > 0 ? n : Infinity; if (padIndex >= padLimit) padIndex = -1; },
     setSuppressed(on) { suppressed = !!on; if (suppressed) clear(); },
+    /** Remove every listener (tests / hot reload). */
+    dispose() {
+      for (const [t, type, fn, cap] of LISTENERS) t.removeEventListener(type, fn, !!cap);
+      clear();
+    },
     get hasPad() { return !!readPad(); },
     get usingPad() { return state.usingPad; },
   };

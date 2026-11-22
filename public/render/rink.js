@@ -1,8 +1,10 @@
-// ICE RIOT renderer - rink: ice, boards, glass, goals (frames, rippling nets, goal lights).
+// ICE RIOT renderer - rink: ice, boards (with a digital LED ad band), glass, goals (frames, rippling
+// nets, goal lights).
 import * as THREE from 'three';
 import { RINK, glassPanels } from '/shared/constants.js';
 import { outline, sweepBand, mergeGeometries, lin } from './util.js';
 import { makeIceTexture, makeBoardTexture, makeNetTexture, makeGlassTexture, makeRadialTexture } from './textures.js';
+import { getAdNetwork } from './ads.js';
 
 const BOARD_T = 0.18; // board thickness (outward)
 
@@ -53,6 +55,8 @@ export function createRink(scene, mirror, aniso, track) {
   const bh = RINK.boardHeight;
   const inner = sweepBand(0, 0, 0, bh, -1, 0, 20, (s, k) => [s / period, k]);
   const boardMat = new THREE.MeshStandardMaterial({ map: boardTex, roughness: 0.45, metalness: 0.0, envMapIntensity: 0.6 });
+  // LED screens along the boards: animated ads from the shared network (arena.js drives the redraws)
+  getAdNetwork(scene, { track, aniso }).patchBoards(boardMat, { periodM: period });
   const boardsInner = new THREE.Mesh(inner, boardMat);
   boardsInner.receiveShadow = true;
   group.add(boardsInner);
@@ -96,8 +100,12 @@ export function createRink(scene, mirror, aniso, track) {
   // stanchions between panels (+ thin top edge highlight), one merged mesh
   const posts = [];
   const postGeo = () => new THREE.BoxGeometry(0.05, gh + 0.04, 0.07);
+  // the low play camera looks through the camera-side glass: no posts there (they would cut across the
+  // bottom of the frame), like a broadcast that never shows the near stanchions
+  const camSide = (p) => p.nz < -0.3 && p.z > W - R * 0.6;
   for (let i = 0; i < panels.length; i++) {
     const a = panels[i], b = panels[(i + 1) % panels.length];
+    if (camSide(a) && camSide(b)) continue;
     // shared endpoint of a and b ~ midpoint of their ends
     // panel local +X = (cos a, -sin a) points against the traversal order, so a's far end is at -X local
     const ax = a.x - Math.cos(a.angle) * a.len / 2, az = a.z + Math.sin(a.angle) * a.len / 2;

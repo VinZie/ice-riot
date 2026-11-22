@@ -5,7 +5,9 @@
 //   ?name=X               player name for this session
 //   ?team=0|1             auto-pick that team on welcome           (used by end-to-end tests)
 //   ?autostart=1          if host, start the game once the pick is in (used by end-to-end tests)
-//   ?demo=lobby|hud|final|menu   offline UI preview with fake data (no server needed)
+//   ?demo=lobby|game|final|menu   offline UI preview with fake data (no server needed)
+//       demo extras: &as=guest (someone else hosts), &side=-1|0|1 (your side), &conn=reconnecting,
+//       &ev=goal|hit|glass|fire|ot|save|post|onetimer|go|period|end (&evat=sec), &ph=faceoff, &clk=8.4, &per=4
 //   ?nogl=1               skip the 3D renderer (2D fallback view)
 
 import { SNAP_RATE, DEFAULT_CONFIG, TEAMS, PHASE, PSTATE, EVENT, RINK, TEAM_SIZE } from '/shared/constants.js';
@@ -30,7 +32,7 @@ function defaultName() {
   const fromUrl = params.get('name');
   if (fromUrl) return fromUrl.slice(0, 16);
   try { const s = localStorage.getItem('iceriot.name'); if (s) return s.slice(0, 16); } catch { /* ignore */ }
-  const tags = ['BLADE', 'SLAPPER', 'ICEMAN', 'RINKRAT', 'ZAMBONI', 'BISCUIT', 'CELLY', 'SNIPER'];
+  const tags = ['Blade', 'Slapper', 'Iceman', 'Rinkrat', 'Zamboni', 'Biscuit', 'Celly', 'Sniper'];
   return `${tags[Math.floor(Math.random() * tags.length)]}${Math.floor(10 + Math.random() * 90)}`;
 }
 
@@ -47,6 +49,7 @@ const onlineNet = net;
 let extras = null;
 const input = createInput();
 const audio = createAudio();
+let pendingView = null; // last lobby view shown before extras.js finished loading
 const ui = createUI(uiRoot, {
   pick: (team) => net.pick(team),
   config: (cfg) => net.sendConfig(cfg),
@@ -59,16 +62,53 @@ const ui = createUI(uiRoot, {
   audioState: () => ({ muted: audio.muted, volume: audio.volume }),
   menuChanged: () => input.clear(),
   extra: (x) => { if (extras) extras.extra(x); else ui.toast('Still loading…', 'info'); },
+  // lobby view switcher: extras mounts the leaderboard / challenges into the view element
+  view: (name, el) => {
+    pendingView = [name, el];
+    if (extras && extras.lobbyView) extras.lobbyView(name, el);
+    else if (demo && name !== 'match') demoLobbyView(name, el);
+  },
+  // career card for the lineup hover (GET /api/player?name=); null when there is no record
+  playerStats: (name) => (demo ? demoPlayerStats(name) : fetchPlayerStats(name)),
 });
 ui.setName(net.name);
 window.__iceRiotBooted = true;
+if (demo) { window.__iceRiotUI = ui; ui.setChallenges({ done: 14, total: 25 }); } // demo previews: screenshot scripts raise toasts and open views
+
+// ?demo=lobby has no extras.js; the Leaderboard / Challenges views still mount for previews.
+let demoViews = null;
+function demoLobbyView(name, el) {
+  demoViews ||= Promise.all([import('./leaderboard.js'), import('./achievements.js')]).then(([lb, ach]) => ({
+    lb: lb.createLeaderboard(document.body, { me: () => net.name, meTeam: 0 }),
+    ach: ach.createAchievements({ container: document.body }),
+  }));
+  demoViews.then((v) => {
+    if (name === 'leaderboard') v.lb.mount(el);
+    else if (name === 'challenges') { v.ach.mountView(el); ui.setChallenges(v.ach.progress()); }
+  }).catch((e) => console.warn('[ICE RIOT] demo views unavailable:', e));
+}
+
+async function fetchPlayerStats(name) {
+  if (extras && extras.isOffline && extras.isOffline()) return null;
+  const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), 4000) : 0;
+  try {
+    const r = await fetch(`/api/player?name=${encodeURIComponent(name)}`, { cache: 'no-store', headers: { Accept: 'application/json' }, signal: ctrl && ctrl.signal });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j && j.ok && j.player ? j.player : null;
+  } catch { return null; } finally { clearTimeout(timer); }
+}
 
 // Optional feature modules (settings, music, replay, touch, chat, couch, challenges,
 // tutorial, leaderboard, offline practice). Loaded async; the game runs fine without them.
 if (!demo) {
   import('./extras.js')
     .then((m) => m.createExtras({ onlineNet, getNet: () => net, setNet: (n) => { net = n; }, ui, input, audio, uiRoot }))
-    .then((x) => { extras = x; window.__iceRiotExtras = true; })
+    .then((x) => {
+      extras = x; window.__iceRiotExtras = true;
+      if (pendingView && pendingView[0] !== 'match' && x.lobbyView) x.lobbyView(pendingView[0], pendingView[1]);
+    })
     .catch((e) => console.warn('[ICE RIOT] extras unavailable:', e));
 }
 
@@ -96,18 +136,19 @@ let fallback = null;
 let rendererFailed = false;
 let lastTeamsKey = '';
 
-function useFallback(reason) {
+function useFallback(reason, asked = false) {
   rendererFailed = true;
   renderer = null;
   if (!fallback) fallback = createFallback2D();
   const msg = reason && reason.message ? reason.message : String(reason || 'unknown error');
-  console.error('[ICE RIOT] renderer unavailable:', reason);
-  ui.banner(`3D renderer unavailable (${msg}). Showing the simple 2D view instead — the game is still playable.`);
+  if (asked) console.info('[ICE RIOT] 2D view:', msg); // ?nogl=1 is a choice, not an error
+  else console.error('[ICE RIOT] renderer unavailable:', msg, reason);
+  ui.banner("3D isn't available on this device, so you're on the simple 2D view. Everything still works.");
   resize();
 }
 
 async function loadRenderer() {
-  if (params.get('nogl') === '1') { useFallback(new Error('disabled with ?nogl=1')); return; }
+  if (params.get('nogl') === '1') { useFallback(new Error('disabled with ?nogl=1'), true); return; }
   try {
     const mod = await import('./render/renderer.js');
     if (typeof mod.createRenderer !== 'function') throw new Error('render/renderer.js has no createRenderer export');
@@ -137,6 +178,7 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (e.code === 'Escape') {
     if (isTypingTarget(e.target)) { e.target.blur(); return; }
+    if (extras && extras.sheetOpen && extras.sheetOpen()) return; // the settings sheet closes itself
     if (ui.screen === 'game') { e.preventDefault(); ui.toggleMenu(); }
     return;
   }
@@ -144,18 +186,32 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyM') {
     const m = audio.toggleMute();
     ui.syncSound();
+    if (extras && extras.syncMute) extras.syncMute();
     ui.toast(m ? 'Sound off' : 'Sound on', 'info');
   } else if (e.code === 'KeyF') {
     toggleFullscreen();
   }
 });
+// Right click is "pass": in a game the browser menu never opens, over the HUD, chat, menus or sheets
+// either (input.js already blocks it over the rink). Text fields keep it for paste.
+window.addEventListener('contextmenu', (e) => {
+  const L = net.lobby;
+  if (L && L.state === 'game' && !isTypingTarget(e.target)) e.preventDefault();
+}, true);
 function toggleFullscreen() {
   try {
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
   } catch { /* unsupported */ }
 }
-input.onPadButton((btn) => ui.padNav(btn));
+// gamepad menu navigation; a sheet on top (settings, challenges, leaderboard) owns the screen, B closes it
+input.onPadButton((btn) => {
+  if (extras && extras.sheetOpen && extras.sheetOpen()) {
+    if (btn === 1) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    return;
+  }
+  ui.padNav(btn);
+});
 
 // rAF stops in background tabs, so tell the server "hands off the stick" right away instead of
 // letting it keep applying the last held input.
@@ -175,6 +231,10 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) relea
 let last = performance.now();
 let lastSend = 0;
 let renderErrors = 0;
+// A phone held portrait in game shows "Turn your phone sideways to play" (ui.js / style.css, same
+// media query) and this player's input pauses until the phone is turned. Tablets (wider than 600 px)
+// still play held upright.
+const heldPortraitMQ = (() => { try { return window.matchMedia('(orientation: portrait) and (pointer: coarse) and (max-width: 600px)'); } catch { return null; } })();
 
 function frame(now) {
   requestAnimationFrame(frame);
@@ -187,17 +247,19 @@ function frame(now) {
   const myTeam = me ? me.team : -1;
   const inGame = !!L && L.state === 'game';
   const playing = inGame && (myTeam === 0 || myTeam === 1);
+  // the pause menu, or a phone held portrait: hands off the stick (and touch controls hide)
+  const paused = ui.menuOpen || (inGame && !!(heldPortraitMQ && heldPortraitMQ.matches));
 
   // input -> server (<= 60/s); buttons are OR-ed between sends so taps are never dropped
-  input.setGameActive(inGame && !ui.menuOpen);
+  input.setGameActive(inGame && !paused);
   const rawInp = input.poll();
-  const inp = extras ? extras.filterInput(rawInp, { inGame, menuOpen: ui.menuOpen }) : rawInp;
+  const inp = extras ? extras.filterInput(rawInp, { inGame, menuOpen: paused }) : rawInp;
   if (playing) {
-    accB |= ui.menuOpen ? 0 : inp.b;
+    accB |= paused ? 0 : inp.b;
     if (now - lastSend >= 1000 / 60 - 1.5) {
       // advance on a 60 Hz grid (not to `now`) so 66-144 Hz displays still send ~60 inputs/s
       lastSend = Math.max(lastSend + 1000 / 60, now - 1000 / 60);
-      if (ui.menuOpen) net.sendInput(++seq, 0, 0, 0);
+      if (paused) net.sendInput(++seq, 0, 0, 0);
       else net.sendInput(++seq, inp.mx, inp.mz, accB);
       accB = 0;
     }
@@ -225,6 +287,7 @@ function frame(now) {
     try {
       renderer.update(view.state, view.dt, view.events, rctx);
       renderer.render();
+      if (extras && extras.afterRender) extras.afterRender(renderer, dt);   // glass-smash picture-in-picture
     } catch (e) {
       console.error('[ICE RIOT] renderer error', e);
       if (++renderErrors > 30) useFallback(e);
@@ -235,13 +298,13 @@ function frame(now) {
 
   ui.update({
     now, status: net.status, rtt: net.rtt, retryIn: net.retryIn(), lobby: L, myId: net.myId,
-    state, events, names, gameSerial: net.gameSerial,
+    state, events, names, gameSerial: net.gameSerial, replaying: !!(extras && extras.replaying && extras.replaying()),
   });
   audio.setScene(inGame ? 'game' : 'lobby');
   audio.handle(events, state, ctx);
   if (extras) {
     try {
-      extras.after({ state, events, ctx, dt, lobby: L, inGame, playing, menuOpen: ui.menuOpen, myTeam });
+      extras.after({ state, events, ctx, dt, lobby: L, inGame, playing, menuOpen: paused, myTeam });
     } catch (e) { console.warn('[ICE RIOT] extras error', e); }
   }
 }
@@ -305,9 +368,22 @@ function createFallback2D() {
         g.lineTo(X(p.x + Math.cos(p.f) * 1.0), Z(p.z + Math.sin(p.f) * 1.0));
         g.strokeStyle = '#111'; g.lineWidth = 2; g.stroke();
         if (p.fire) { g.beginPath(); g.arc(X(p.x), Z(p.z), r + 4, 0, Math.PI * 2); g.strokeStyle = '#ff6a00'; g.lineWidth = 3; g.stroke(); }
+        if (p.c && p.c === ctx.myId) {
+          // your own meters (the 3D view draws them on the head plate): slap charge arc + turbo bar
+          if (p.s === PSTATE.CHARGE && p.ch > 0) {
+            const ch = Math.min(1, p.ch);
+            g.beginPath(); g.arc(X(p.x), Z(p.z), r + 8, -Math.PI / 2, -Math.PI / 2 + ch * Math.PI * 2);
+            g.strokeStyle = ch >= 0.999 ? '#FF4B3E' : '#FF8A2A'; g.lineWidth = 3; g.stroke();
+          }
+          if (typeof p.tb === 'number') {
+            const tb = Math.max(0, Math.min(1, p.tb)), bw = 44, bx = X(p.x) - bw / 2, by = Z(p.z) + r + 12;
+            g.fillStyle = 'rgba(10, 15, 28, 0.7)'; g.beginPath(); g.roundRect(bx, by, bw, 5, 2.5); g.fill();
+            if (tb > 0) { g.fillStyle = tb < 0.25 ? '#FF4B3E' : '#7CC4FF'; g.beginPath(); g.roundRect(bx, by, Math.max(5, bw * tb), 5, 2.5); g.fill(); }
+          }
+        }
         if (p.c) {
           g.font = '600 12px system-ui, sans-serif'; g.textAlign = 'center'; g.fillStyle = '#111';
-          g.fillText(String(ctx.names[p.c] || '').toUpperCase(), X(p.x), Z(p.z) - r - 6);
+          g.fillText(String(ctx.names[p.c] || ''), X(p.x), Z(p.z) - r - 6);
         }
       }
       if (state.k) {
@@ -325,15 +401,18 @@ function createDemoNet(mode) {
   const listeners = {};
   const t0 = performance.now();
   const myId = 1;
+  const side = params.has('side') ? Number(params.get('side')) : 0;
   const clients = [
-    { id: 1, name: 'BLADE', team: 0, ping: 18 },
+    { id: 1, name: 'Blade', team: side === 1 || side === -1 ? side : 0, ping: 18 },
     { id: 2, name: 'Mags', team: 0, ping: 31 },
     { id: 3, name: 'DeepFreeze', team: 1, ping: 44 },
-    { id: 4, name: 'Toaster', team: -1, ping: 72 },
+    { id: 4, name: 'Toaster', team: -1, ping: 96 },
     { id: 5, name: 'nik', team: -1, ping: 25 },
   ];
-  const config = { ...DEFAULT_CONFIG, teams: [0, 2], periodLength: 180, difficulty: 1 };
-  const lobby = { t: 'lobby', state: mode === 'lobby' ? 'lobby' : 'game', host: myId, clients, config };
+  const config = { ...DEFAULT_CONFIG, teams: [0, 1], periodLength: 120, difficulty: 1 };
+  const host = params.get('as') === 'guest' ? 2 : myId;
+  const lobby = { t: 'lobby', state: mode === 'lobby' ? 'lobby' : 'game', host, clients, config };
+  const reconnecting = params.get('conn') === 'reconnecting';
   const evQueue = [];
   const fired = new Set();
   let menuOpened = false;
@@ -342,46 +421,61 @@ function createDemoNet(mode) {
     fired.add(key);
     evQueue.push(...evs);
   };
+  const relobby = (over = {}) => { net.lobby = { ...net.lobby, config: { ...config }, clients: clients.map((c) => ({ ...c })), ...over }; };
   const net = {
-    status: 'online', myId, room: 'main', name: 'BLADE', lobby, rtt: 21, gameSerial: 1, interpDelay: 66,
+    status: reconnecting ? 'reconnecting' : 'online', myId, room: 'main', name: 'Blade', lobby, rtt: 21, gameSerial: 1, interpDelay: 66,
     on(type, fn) { (listeners[type] ||= []).push(fn); return net; },
     connect() { return net; },
-    retryIn: () => 0,
-    pick(team) { clients[0].team = team; net.lobby = { ...lobby, clients: [...clients] }; },
-    sendConfig(c) { Object.assign(config, c); net.lobby = { ...lobby, config: { ...config }, clients: [...clients] }; },
-    start() { net.lobby = { ...net.lobby, state: 'game' }; },
-    toLobby() { net.lobby = { ...net.lobby, state: 'lobby' }; },
+    retryIn: () => (reconnecting ? 3 : 0),
+    pick(team) { clients[0].team = team; relobby(); },
+    sendConfig(c) { Object.assign(config, c); relobby(); },
+    start() { relobby({ state: 'game' }); },
+    toLobby() { relobby({ state: 'lobby' }); },
     sendInput() { return true; },
-    setName(n) { clients[0].name = n; net.name = n; net.lobby = { ...net.lobby, clients: [...clients] }; },
+    setName(n) { clients[0].name = n; net.name = n; relobby(); },
     takeEvents() { return evQueue.splice(0); },
     getState(now) {
       if (!net.lobby || net.lobby.state !== 'game') return null;
       const t = (now - t0) / 1000;
       const over = mode === 'final';
+      const per = Number(params.get('per')) || (over ? 3 : 2);
       if (mode === 'menu' && !menuOpened) { menuOpened = true; queueMicrotask(() => ui.toggleMenu()); }
+      if (over && !fired.has('unlock')) { fired.add('unlock'); setTimeout(() => ui.noteUnlock({ id: 'overtime-outlaw', title: 'Overtime outlaw', tier: 2 }), 200); }
       if (over) {
         at(0.1, 'stats', [
           ...Array.from({ length: 23 }, () => ({ type: EVENT.SHOT, by: 0, kind: 'wrist' })),
           ...Array.from({ length: 17 }, () => ({ type: EVENT.SHOT, by: 5, kind: 'slap' })),
-          ...Array.from({ length: 14 }, () => ({ type: EVENT.HIT, by: 1, target: 4, power: 0.5, big: false })),
-          ...Array.from({ length: 9 }, () => ({ type: EVENT.HIT, by: 6, target: 2, power: 0.5, big: false })),
+          ...Array.from({ length: 12 }, () => ({ type: EVENT.HIT, by: 1, target: 4, power: 0.5, big: false })),
+          ...Array.from({ length: 2 }, () => ({ type: EVENT.HIT, by: 2, target: 4, power: 0.5, big: false })),
+          ...Array.from({ length: 5 }, () => ({ type: EVENT.HIT, by: 6, target: 2, power: 0.5, big: false })),
+          ...Array.from({ length: 4 }, () => ({ type: EVENT.HIT, by: 4, target: 0, power: 0.5, big: false })),
           { type: EVENT.HIT, by: 1, target: 4, power: 1, big: true }, { type: EVENT.HIT, by: 1, target: 5, power: 1, big: true },
           { type: EVENT.HIT, by: 6, target: 0, power: 1, big: true },
           { type: EVENT.GLASS, by: 1, target: 4, panel: 3 },
           ...Array.from({ length: 13 }, () => ({ type: EVENT.SAVE, goalie: 3 })),
           ...Array.from({ length: 19 }, () => ({ type: EVENT.SAVE, goalie: 7 })),
+          { type: EVENT.GOAL, team: 0, scorer: 0, assist: 1 }, { type: EVENT.GOAL, team: 1, scorer: 4, assist: -1 },
+          { type: EVENT.GOAL, team: 0, scorer: 1, assist: 0 }, { type: EVENT.GOAL, team: 1, scorer: 4, assist: 5 },
+          { type: EVENT.GOAL, team: 0, scorer: 2, assist: 1 }, { type: EVENT.GOAL, team: 1, scorer: 6, assist: 4 },
+          { type: EVENT.GOAL, team: 0, scorer: 0, assist: -1 },
         ]);
       } else {
         const evName = params.get('ev') || 'goal';
         const demoEvents = {
           goal: { type: EVENT.GOAL, team: 0, scorer: 0, assist: 1, oneTimer: false, x: 26, z: 0 },
-          hit: { type: EVENT.HIT, by: 1, target: 5, power: 1, big: true, x: 4, z: 3 },
-          glass: { type: EVENT.GLASS, by: 1, target: 5, panel: 4, x: 0, z: -13 },
+          hit: { type: EVENT.HIT, by: 1, target: 6, power: 1, big: true, x: 4, z: 3 },
+          glass: { type: EVENT.GLASS, by: 1, target: 6, panel: 4, x: 0, z: -13 },
           fire: { type: EVENT.FIRE, player: 0, on: true },
           ot: { type: EVENT.PERIOD, period: 4 },
+          period: { type: EVENT.PERIOD, period: 1 },
+          end: { type: EVENT.PERIOD_END, period: 2 },
           save: { type: EVENT.SAVE, goalie: 7, x: 26, z: 0 },
+          post: { type: EVENT.POST, x: 26, z: 0 },
+          go: { type: EVENT.FACEOFF, x: 0, z: 0 },
           onetimer: { type: EVENT.SHOT, by: 0, kind: 'onetimer', power: 1 },
         };
+        if (evName === 'end') at(0.05, 'endstats', [...Array.from({ length: 14 }, () => ({ type: EVENT.SHOT, by: 0 })), ...Array.from({ length: 9 }, () => ({ type: EVENT.SHOT, by: 5 })),
+          ...Array.from({ length: 11 }, () => ({ type: EVENT.HIT, by: 1, target: 5 })), ...Array.from({ length: 7 }, () => ({ type: EVENT.HIT, by: 5, target: 1 }))]);
         if (demoEvents[evName]) at(Number(params.get('evat') || 3.6), 'ev', [demoEvents[evName]]);
       }
       const p = [];
@@ -391,18 +485,32 @@ function createDemoNet(mode) {
         const ph = t * 0.6 + id * 0.8;
         const x = goalie ? (tm === 0 ? -25.6 : 25.6) : Math.sin(ph) * 14 + (tm === 0 ? -3 : 3);
         const z = goalie ? Math.sin(t + id) * 0.6 : Math.cos(ph * 1.3) * 8;
+        const mine = id === 0 && clients[0].team === 0;
         p.push({ id, tm, g: goalie ? 1 : 0, x, y: 0, z, vx: Math.cos(ph) * 8, vz: -Math.sin(ph * 1.3) * 10, f: Math.atan2(-Math.sin(ph * 1.3), Math.cos(ph)),
           s: id === 0 ? PSTATE.CHARGE : PSTATE.SKATE, sT: 0.5, tb: id === 0 ? 0.62 : 1, fire: id === 0 ? 1 : 0, ch: id === 0 ? (t * 0.5) % 1 : 0,
-          c: id === 0 ? 1 : id === 1 ? 2 : id === 4 ? 3 : 0, n: 10 + id });
+          c: mine ? 1 : id === 1 ? 2 : id === 4 ? 3 : 0, n: 10 + id });
       }
       const owner = p[0];
+      const faceoff = params.get('ph') === 'faceoff';
+      const clk = params.has('clk') ? Number(params.get('clk')) : 94.3 - t;
       return {
-        time: now, tick: Math.floor(t * 60), ph: over ? PHASE.GAME_OVER : PHASE.PLAY, phT: 0, per: 2, clk: Math.max(0, 94.3 - t),
-        sc: over ? [4, 3] : [2, 1], teams: config.teams, p,
+        time: now, tick: Math.floor(t * 60), ph: over ? PHASE.GAME_OVER : faceoff ? PHASE.FACEOFF : PHASE.PLAY,
+        phT: faceoff ? (t % 1.6) : 0, per, clk: Math.max(0, clk),
+        sc: over ? [4, 3] : faceoff ? [3, 3] : [2, 1], teams: config.teams, p,
         k: { x: owner.x + Math.cos(owner.f), y: 0, z: owner.z + Math.sin(owner.f), vx: 0, vy: 0, vz: 0, o: 0 },
         gl: [],
       };
     },
   };
   return net;
+}
+
+// Fake career cards for the demo lineup hover.
+function demoPlayerStats(name) {
+  const rows = {
+    deepfreeze: { wins: 19, losses: 15, games: 34, goals: 41, hits: 188, glass: 7, winPct: 0.559 },
+    mags: { wins: 17, losses: 14, games: 31, goals: 29, hits: 140, glass: 4, winPct: 0.548 },
+    blade: { wins: 15, losses: 13, games: 28, goals: 37, hits: 201, glass: 11, winPct: 0.536 },
+  };
+  return new Promise((res) => setTimeout(() => res(rows[String(name).toLowerCase()] || null), 120));
 }

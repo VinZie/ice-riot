@@ -1,13 +1,37 @@
-// ICE RIOT renderer - arena: stands, instanced crowd (GPU-animated), jumbotron, LED ribbon,
+// ICE RIOT renderer - arena: stands, instanced crowd (GPU-animated) with phones, jumbotron, LED ribbon,
 // rafters + light rigs, sweeping celebration beams, and the procedural environment map.
+// The ribbon, jumbotron and its ticker ring are "digital" LED screens driven by ads.js.
 import * as THREE from 'three';
-import { RINK, TEAMS } from '/shared/constants.js';
+import { RINK, TEAMS, PHASE } from '/shared/constants.js';
 import { outline, sweepBand, mergeGeometries, rng, lin } from './util.js';
-import { makeCanvas, canvasTex, drawJumbotron, makeRibbonTexture, makeSuiteTexture, makeRadialTexture } from './textures.js';
+import { makeSuiteTexture, makeRadialTexture } from './textures.js';
+import { getAdNetwork, ADS } from './ads.js';
+import { createCrowdPhones, CROWD_MOTION_GLSL } from './crowd-phones.js';
 
 const LOWER = { o0: 2.4, rows: 13, depth: 0.9, rise: 0.5, h0: 1.25 };
 const UPPER = { o0: 16.4, rows: 10, depth: 0.95, rise: 0.62, h0: 9.9 };
 const RIBBON = { off: 15.0, y0: 7.95, y1: 9.15 };
+
+/** Base-outline arclength -> arclength along the outline offset by `off` (corners get longer). */
+function offsetArc(off) {
+  const L = RINK.halfLength, W = RINK.halfWidth, R = RINK.cornerRadius, q = R * Math.PI / 2;
+  const segs = [2 * (L - R), q, 2 * (W - R), q, 2 * (L - R), q, 2 * (W - R), q];
+  const k = (R + off) / R;
+  let total = 0;
+  for (let i = 0; i < 8; i++) total += segs[i] * (i % 2 ? k : 1);
+  return {
+    total,
+    map(s) {
+      let acc = 0, out = 0;
+      for (let i = 0; i < 8; i++) {
+        const l = segs[i], kk = i % 2 ? k : 1;
+        if (s <= acc + l + 1e-6 || i === 7) return out + Math.max(0, s - acc) * kk;
+        acc += l; out += l * kk;
+      }
+      return out;
+    },
+  };
+}
 
 /** Build a PMREM environment from a tiny procedural "arena" scene (dark bowl, bright rafters, white ice bounce). */
 export function buildEnvironment(renderer) {
@@ -74,12 +98,15 @@ export function createArena(scene, aniso, track) {
     new THREE.MeshBasicMaterial({ map: suiteTex, toneMapped: false, color: 0xbbbbbb }));
   group.add(suites);
 
-  // LED ribbon on the fascia between bowls
-  const ribbonTex = track(makeRibbonTexture('ads'));
-  const goalRibbonTex = track(makeRibbonTexture('goal', 0xff3030));
-  const ribbonPer = outline(0).total;
-  const ribbonMat = new THREE.MeshBasicMaterial({ map: ribbonTex, toneMapped: false, color: 0xffffff });
-  const ribbonGeo = sweepBand(RIBBON.off, RIBBON.y0, RIBBON.off, RIBBON.y1, -1, 0, 24, (s, k) => [s / ribbonPer * Math.round(ribbonPer / 34), k]);
+  // LED ribbon on the fascia between bowls: tiles of the shared ad atlas, sized by the real (offset) length
+  // so the corners are not stretched. uv.x counts tiles.
+  const ads = getAdNetwork(scene, { track, aniso });
+  const rArc = offsetArc(RIBBON.off);
+  const tileLen = (RIBBON.y1 - RIBBON.y0) * ADS.TW / ADS.TH;
+  const ribbonTiles = ADS.CH * Math.max(1, Math.round(rArc.total / (tileLen * ADS.CH)));
+  const ribbonMat = new THREE.MeshBasicMaterial({ map: ads.atlas, toneMapped: false, color: 0xffffff });
+  ads.patchRibbon(ribbonMat);
+  const ribbonGeo = sweepBand(RIBBON.off, RIBBON.y0, RIBBON.off, RIBBON.y1, -1, 0, 24, (s, k) => [rArc.map(s) / rArc.total * ribbonTiles, k]);
   const ribbon = new THREE.Mesh(ribbonGeo, ribbonMat);
   group.add(ribbon);
 
@@ -172,11 +199,12 @@ export function createArena(scene, aniso, track) {
     uTime: { value: 0 }, uJump: { value: new THREE.Vector2(0, 0) }, uHype: { value: 0 },
     uWave: { value: 0 }, uWaveAmp: { value: 0 }, uSelf: { value: 0.22 }, uFlash: { value: 0 }, uFlashOn: { value: 1 },
   };
+  // motion is the GLSL shared with the phones (crowd-phones.js); camera flashes now come from the phones.
+  // Phone holders (iUp > 0) swing the right arm forward/up to hold the phone.
   crowdMat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms);
-    sh.vertexShader = `attribute float aPart; attribute vec3 iShirt; attribute vec4 iMeta;
-uniform float uTime; uniform vec2 uJump; uniform float uHype; uniform float uWave; uniform float uWaveAmp; uniform float uFlash; uniform float uFlashOn;
-varying float vFlash;
+    sh.vertexShader = `attribute float aPart; attribute vec3 iShirt; attribute vec4 iMeta; attribute float iUp;
+${CROWD_MOTION_GLSL}
 ` + sh.vertexShader
       .replace('#include <color_vertex>', `
   {
@@ -185,31 +213,31 @@ varying float vFlash;
   }`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
   {
-    float seed = iMeta.x, team = iMeta.y, ang = iMeta.z;
-    float jumpAmt = team < 0.5 ? uJump.x : (team < 1.5 ? uJump.y : 0.4 * max(uJump.x, uJump.y));
-    jumpAmt = max(jumpAmt, uHype * (0.4 + 0.6 * seed));
-    float bob = sin(uTime * (1.6 + seed * 2.2) + seed * 50.0) * 0.022;
-    float hop = max(0.0, sin(uTime * (7.0 + seed * 4.0) + seed * 31.0)) * 0.34 * jumpAmt;
-    float dw = mod(ang - uWave + 3.14159265, 6.2831853) - 3.14159265;
-    float wave = exp(-dw * dw * 9.0) * uWaveAmp;
-    float arm = clamp(max(jumpAmt * 1.4, wave * 1.8), 0.0, 1.0) * (0.55 + 0.45 * fract(seed * 7.13));
+    vec3 mo = crowdMotion(iMeta);
+    float seed = iMeta.x, jumpAmt = mo.y, arm = mo.z;
     if (aPart > 1.5) {
       float side = aPart < 2.5 ? -1.0 : 1.0;
+      float hold = side > 0.0 ? phoneLift(iUp) : 0.0;
       vec2 piv = vec2(side * 0.25, 0.5);
-      float a = side * (arm * 2.6 + sin(uTime * 10.0 + seed * 20.0) * 0.3 * jumpAmt);
+      float a = side * (arm * 2.6 + sin(uTime * 10.0 + seed * 20.0) * 0.3 * jumpAmt) * (1.0 - hold);
       vec2 q = transformed.xy - piv;
       float c = cos(a), s = sin(a);
       transformed.xy = piv + vec2(c * q.x - s * q.y, s * q.x + c * q.y);
+      if (hold > 0.0) {
+        float th = -hold * phoneHold(seed);
+        vec2 r = vec2(transformed.y - 0.5, transformed.z);
+        float ct = cos(th), st = sin(th);
+        transformed.y = 0.5 + ct * r.x - st * r.y;
+        transformed.z = st * r.x + ct * r.y;
+      }
     }
-    transformed.y += bob + hop + wave * 0.42;
-    float fl = fract(sin(seed * 913.7 + floor(uTime * 9.0 + seed * 3.0) * 17.3) * 43758.5453);
-    vFlash = step(0.997 - uFlash * 0.012, fl) * (0.3 + uFlash) * uFlashOn;
+    transformed.y += mo.x;
   }`);
-    sh.fragmentShader = `uniform float uSelf; varying float vFlash;
+    sh.fragmentShader = `uniform float uSelf;
 ` + sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-  totalEmissiveRadiance += vColor * uSelf + vec3(vFlash * 3.0);`);
+  totalEmissiveRadiance += vColor * uSelf;`);
   };
-  crowdMat.customProgramCacheKey = () => 'iceriot-crowd';
+  crowdMat.customProgramCacheKey = () => 'iceriot-crowd-2';
   const crowd = new THREE.Mesh(fanGeo, crowdMat);
   fanGeo.instanceCount = COUNT;
   const offsets = new Float32Array(COUNT * 4); // xyz + rotation
@@ -225,6 +253,10 @@ varying float vFlash;
   fanGeo.setAttribute('iOffset', new THREE.InstancedBufferAttribute(offsets, 4));
   fanGeo.setAttribute('iShirt', new THREE.InstancedBufferAttribute(shirt, 3));
   fanGeo.setAttribute('iMeta', new THREE.InstancedBufferAttribute(meta, 4));
+  // phones: ~7% of fans, more at big moments (one instanced draw call)
+  const phones = createCrowdPhones({ count: COUNT, offsets, meta, uniforms, rand: rng(9090) });
+  fanGeo.setAttribute('iUp', phones.fanUp);
+  group.add(phones.mesh);
   // place instances via the iOffset attribute (rotation about Y + translation) before the main transform
   const prevCompile = crowdMat.onBeforeCompile;
   crowdMat.onBeforeCompile = (sh) => {
@@ -265,6 +297,7 @@ varying float vFlash;
       shirt[i * 3] = tmp[0] * k; shirt[i * 3 + 1] = tmp[1] * k; shirt[i * 3 + 2] = tmp[2] * k;
     }
     fanGeo.attributes.iShirt.needsUpdate = true;
+    phones.setTeamColors(lin(th.colors.primary), lin(ta.colors.primary));
   }
 
   // ------------------------------------------------------------------ jumbotron
@@ -275,20 +308,21 @@ varying float vFlash;
   const frameMat = new THREE.MeshStandardMaterial({ color: 0x15181f, roughness: 0.6, metalness: 0.5 });
   const jFrame = new THREE.Mesh(new THREE.BoxGeometry(JW + 0.3, JH + 0.5, JD + 0.3), frameMat);
   jumbo.add(jFrame);
-  const jCanvas = makeCanvas(1024, 512);
-  const jTex = track(canvasTex(jCanvas, { aniso }));
+  // screens: score during play, ad breaks during stoppages, goal screen (ads.js draws, at <= 15 fps)
   const screens = [];
   const sGeo = (w, h, x, z, ry) => { const g = new THREE.PlaneGeometry(w, h); g.rotateY(ry); g.translate(x, 0, z); return g; };
   screens.push(sGeo(JW, JH, 0, JD / 2 + 0.16, 0));
   screens.push(sGeo(JW, JH, 0, -JD / 2 - 0.16, Math.PI));
   screens.push(sGeo(JD, JH, JW / 2 + 0.16, 0, Math.PI / 2));
   screens.push(sGeo(JD, JH, -JW / 2 - 0.16, 0, -Math.PI / 2));
-  const jScreens = new THREE.Mesh(mergeGeometries(screens), new THREE.MeshBasicMaterial({ map: jTex, toneMapped: false }));
+  const jScreenMat = new THREE.MeshBasicMaterial({ map: ads.jumboTex, toneMapped: false });
+  ads.patchScreen(jScreenMat, 512, 256, 'jumbo');
+  const jScreens = new THREE.Mesh(mergeGeometries(screens), jScreenMat);
   jumbo.add(jScreens);
-  // LED rings above/below the screens
-  const ringTex = track(makeRibbonTexture('ads'));
+  // LED ticker ring under the screens (crawls in whole-LED steps)
   const ringGeo = new THREE.CylinderGeometry(4.9, 4.9, 0.55, 48, 1, true);
-  const jRingMat = new THREE.MeshBasicMaterial({ map: ringTex, toneMapped: false, side: THREE.DoubleSide });
+  const jRingMat = new THREE.MeshBasicMaterial({ map: ads.tickerTex, toneMapped: false, side: THREE.DoubleSide });
+  ads.patchScreen(jRingMat, 1024, 24, 'ring');
   const jRing = new THREE.Mesh(ringGeo, jRingMat);
   jRing.position.y = -JH / 2 - 0.75;
   jRing.scale.set(1, 1, 0.72);
@@ -296,14 +330,13 @@ varying float vFlash;
   const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 10, 6), frameMat);
   cable.position.y = JH / 2 + 5;
   jumbo.add(cable);
-  let jKey = '';
+  let jMode = 'attract', jPer = 1;
   function setJumbo(teams, sc, per, mode) {
-    const key = `${teams[0]}|${teams[1]}|${sc[0]}|${sc[1]}|${per}|${mode}`;
-    if (key === jKey) return;
-    jKey = key;
-    drawJumbotron(jCanvas, teams, sc, per, mode);
-    jTex.needsUpdate = true;
+    jMode = mode; jPer = per;
+    ads.setJumbo(teams, sc, per, mode);
   }
+  const endLabels = ['End of period', 'End of 1st', 'End of 2nd', 'End of 3rd', 'End of overtime'];
+  const endLabel = (per) => endLabels[Math.max(0, Math.min(4, per | 0))] || endLabels[0];
 
   // ------------------------------------------------------------------ celebration beams
   const beamMat = new THREE.ShaderMaterial({
@@ -334,13 +367,19 @@ varying float vFlash;
   beamGeo.dispose();
 
   // ------------------------------------------------------------------ state
-  const state = { jump: [0, 0], hype: 0, wave: 0, waveAmp: 0, beams: 0, goalRibbon: 0, flash: 0 };
+  const state = { jump: [0, 0], hype: 0, wave: 0, waveAmp: 0, beams: 0, flash: 0, excite: 0 };
+  const adOpts = { stoppage: false, stoppageLabel: '', goalTeam: -1 };
   function update(dt, time, opts) {
+    opts = opts || {};
     uniforms.uTime.value = time;
     state.jump[0] = Math.max(0, state.jump[0] - dt * 0.28);
     state.jump[1] = Math.max(0, state.jump[1] - dt * 0.28);
     state.hype = Math.max(0, state.hype - dt * 0.9);
     state.flash = Math.max(0, state.flash - dt * 0.25);
+    // phones: up with goals / fights / hype, down slowly afterwards
+    state.excite = Math.max(0, state.excite - dt * 0.16);
+    if (opts.fight) state.excite = Math.max(state.excite, 0.85);
+    phones.update(dt, state.excite);
     uniforms.uJump.value.set(state.jump[0], state.jump[1]);
     uniforms.uHype.value = Math.min(1, state.hype);
     uniforms.uFlash.value = Math.min(1, state.flash + Math.max(state.jump[0], state.jump[1]) * 0.6);
@@ -360,28 +399,45 @@ varying float vFlash;
       b.m.rotation.z = Math.sin(time * 0.9 + b.ph) * 0.55;
       b.m.rotation.x = Math.cos(time * 0.7 + b.ph * 1.7) * 0.4;
     }
-    // ribbon scroll + goal mode
-    const useGoal = opts.goalTeamColor != null;
-    ribbonMat.map = useGoal ? goalRibbonTex : ribbonTex;
-    ribbonMat.color.setHex(useGoal ? opts.goalTeamColor : 0xffffff);
-    if (useGoal && !calm) ribbonMat.color.multiplyScalar(0.75 + 0.25 * Math.sin(time * 12));
-    ribbonTex.offset.x = (time * 0.035) % 1;
-    goalRibbonTex.offset.x = (time * 0.12) % 1;
-    ringTex.offset.x = (-time * 0.05) % 1;
-    jRing.rotation.y = 0;
+    // LED network: goal takeover colours, jumbotron ad breaks during stoppages (period end, faceoff waits).
+    // opts.phase / opts.fight are optional (renderer may pass them); without a phase, the intermission wave
+    // outside the final is read as the period-end stoppage.
+    let goalTeam = -1;
+    if (opts.goalTeamColor != null) {
+      goalTeam = opts.goalTeamColor === (TEAMS[teamIdx[1]] || TEAMS[1]).colors.primary && opts.goalTeamColor !== (TEAMS[teamIdx[0]] || TEAMS[0]).colors.primary ? 1 : 0;
+    }
+    adOpts.goalTeam = goalTeam;
+    adOpts.stoppage = false;
+    if (typeof opts.phase === 'number') {
+      if (opts.phase === PHASE.PERIOD_END) { adOpts.stoppage = true; adOpts.stoppageLabel = endLabel(jPer); }
+      else if (opts.phase === PHASE.FACEOFF) { adOpts.stoppage = true; adOpts.stoppageLabel = 'Faceoff'; }
+    } else if (opts.wave && jMode === 'score') { adOpts.stoppage = true; adOpts.stoppageLabel = endLabel(jPer); }
+    ads.update(dt, time, adOpts);
   }
 
   let calm = false;
+  const teamIdx = [0, 1];
   return {
-    group, jumbo, crowd, crowdCount: COUNT,
-    setTeams(h, a) { setCrowdColors(h, a); },
-    /** 0..1 fraction of fans drawn (quality 'low' uses 0.5). */
-    setCrowdDensity(d) { fanGeo.instanceCount = Math.max(1, Math.round(COUNT * Math.max(0.1, Math.min(1, d)))); },
-    /** reduceFlashes: no crowd camera flashes, no strobing LED ribbon. */
-    setReduceFlashes(v) { calm = !!v; uniforms.uFlashOn.value = calm ? 0 : 1; },
+    group, jumbo, crowd, phones: phones.mesh, crowdCount: COUNT, phoneCount: phones.count, ads,
+    setTeams(h, a) { teamIdx[0] = h; teamIdx[1] = a; setCrowdColors(h, a); ads.setTeams(h, a); },
+    /** 0..1 fraction of fans drawn (quality 'low' uses 0.5; also drops the LED canvases to 8 fps). */
+    setCrowdDensity(d) {
+      fanGeo.instanceCount = Math.max(1, Math.round(COUNT * Math.max(0.1, Math.min(1, d))));
+      phones.setFanCount(fanGeo.instanceCount);
+      ads.setQuality(d < 1 ? 'low' : 'high');
+    },
+    /** reduceFlashes: no phone camera flashes, no pulsing LED takeovers or refresh band. */
+    setReduceFlashes(v) { calm = !!v; uniforms.uFlashOn.value = calm ? 0 : 1; ads.setCalm(calm); },
     setJumbo,
-    cheer(team, amt = 1) { if (team === 0 || team === 1) state.jump[team] = Math.min(1.2, state.jump[team] + amt); state.flash = Math.min(1, state.flash + 0.5 * amt); },
-    hype(amt) { state.hype = Math.min(1.5, state.hype + amt); },
+    cheer(team, amt = 1) {
+      if (team === 0 || team === 1) {
+        state.jump[team] = Math.min(1.2, state.jump[team] + amt);
+        if (amt >= 1) ads.takeover(team); // goal (or final) takeover on every LED surface, in sync
+      }
+      state.flash = Math.min(1, state.flash + 0.5 * amt);
+      state.excite = Math.max(state.excite, Math.min(1, amt));
+    },
+    hype(amt) { state.hype = Math.min(1.5, state.hype + amt); state.excite = Math.max(state.excite, Math.min(1, amt * 0.9)); },
     update,
   };
 }

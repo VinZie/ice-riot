@@ -4,63 +4,57 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ICE RIOT - settings test</title>
+<link rel="icon" href="data:,">
 <style>
+  /* No style.css on purpose: the sheet must look right from its own token fallbacks. */
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
   body {
-    background: #05070d; color: #dfe8f7;
-    font: 14px/1.35 "Bahnschrift SemiCondensed", Bahnschrift, "Arial Narrow", system-ui, sans-serif;
+    background: #0A0F1C; color: #E8EDF5;
+    font: 13px/18px Bahnschrift, "DIN Alternate", "Segoe UI", sans-serif;
   }
-  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; height: 100vh; }
-  /* faux arena behind the panel so the translucency reads */
-  .stage {
-    position: relative; overflow: hidden; min-height: 0;
-    background:
-      radial-gradient(60% 40% at 50% 8%, rgba(255, 220, 170, 0.18), transparent 70%),
-      linear-gradient(180deg, #121a2c 0%, #0b1020 38%, #c9dcef 38.2%, #e8f2fb 62%, #b9cde3 100%);
-  }
-  .stage::before {           /* center line + blue lines + circle */
-    content: ''; position: absolute; left: 0; right: 0; top: 38%; bottom: 0;
-    background:
-      radial-gradient(circle at 50% 50%, transparent 58px, rgba(200, 20, 40, 0.55) 59px 63px, transparent 64px),
-      linear-gradient(90deg, transparent 49.6%, rgba(200, 20, 40, 0.65) 49.6% 50.4%, transparent 50.4%),
-      linear-gradient(90deg, transparent 26%, rgba(30, 80, 200, 0.55) 26% 27.2%, transparent 27.2% 72.8%, rgba(30, 80, 200, 0.55) 72.8% 74%, transparent 74%);
-  }
-  .stage::after {            /* crowd dots */
-    content: ''; position: absolute; left: 0; right: 0; top: 0; height: 36%;
-    background: radial-gradient(circle, rgba(255, 255, 255, 0.16) 1.5px, transparent 2px) 0 0 / 14px 12px;
-  }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; height: 100vh; }
+  .stage { position: relative; overflow: hidden; min-height: 0; background: #0A0F1C; }
+  #game { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   .stage-msg {
-    position: absolute; left: 50%; top: 18%; transform: translateX(-50%); z-index: 1; text-align: center;
-    font-size: 15px; letter-spacing: 0.2em; text-transform: uppercase; color: #9fb4d6;
+    position: absolute; left: 32px; top: 28px; z-index: 1; pointer-events: none; color: #A1ACC0;
   }
-  .stage-msg b { display: block; font-size: 44px; letter-spacing: 0.04em; font-style: italic; color: #fff; }
+  .stage-msg b { display: block; font-size: 22px; line-height: 1.2; color: #E8EDF5; margin-bottom: 4px; }
+  kbd {
+    font: inherit; font-size: 11px; padding: 1px 5px; border-radius: 4px; background: #1E2940; color: #A1ACC0;
+  }
   aside {
-    display: flex; flex-direction: column; gap: 10px; min-height: 0; padding: 14px;
-    background: #0a0f1c; border-left: 1px solid #1d2842;
+    display: flex; flex-direction: column; gap: 12px; min-height: 0; padding: 20px;
+    background: #111829; box-shadow: inset 1px 0 0 #253049;
   }
-  aside h2 { margin: 0; font-size: 12px; letter-spacing: 0.3em; text-transform: uppercase; color: #5ad2ff; }
-  .tools { display: flex; flex-wrap: wrap; gap: 6px; }
+  aside h2 { margin: 0; font-size: 13px; line-height: 1.23; font-weight: 600; }
+  .tools { display: flex; flex-wrap: wrap; gap: 8px; }
   .tools button {
-    font: inherit; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer;
-    color: #fff; background: #1a2440; border: 1px solid #2d3d66; padding: 6px 10px;
+    font: inherit; height: 32px; padding: 0 12px; cursor: pointer; border-radius: 10px;
+    color: #E8EDF5; background: transparent; border: 1px solid #34425F;
   }
-  .tools button:hover { border-color: #5ad2ff; }
+  .tools button:hover { background: #172034; }
+  .tools button:focus-visible { outline: 2px solid #E8EDF5; outline-offset: 2px; }
   pre {
-    flex: 1 1 auto; min-height: 0; overflow: auto; margin: 0; padding: 10px; background: #060912;
-    border: 1px solid #1d2842; font: 12px/1.45 Consolas, "Cascadia Mono", monospace; color: #b9c8e4;
+    flex: 1 1 auto; min-height: 0; overflow: auto; margin: 0; padding: 10px; background: #0A0F1C;
+    border: 1px solid #253049; border-radius: 10px; font: 12px/1.45 "Cascadia Mono", ui-monospace, Consolas, monospace; color: #A1ACC0;
   }
-  pre mark { background: rgba(68, 240, 160, 0.22); color: #fff; }
-  .probe { padding: 8px 10px; background: #060912; border: 1px solid #1d2842; font-family: Consolas, monospace; font-size: 12px; }
-  .probe b { color: #ffcf3f; }
-  #log { margin: 0; padding: 0 0 0 18px; max-height: 120px; overflow: auto; font: 11px/1.4 Consolas, monospace; color: #8ea2c4; }
-  #selftest { white-space: pre-wrap; font: 12px/1.4 Consolas, monospace; }
-  #selftest .ok { color: #44f0a0; } #selftest .bad { color: #ff5a5a; }
+  pre mark { background: #1E2940; color: #E8EDF5; }
+  .probe { padding: 8px 10px; background: #0A0F1C; border: 1px solid #253049; border-radius: 10px; font-size: 12px; color: #A1ACC0; }
+  .probe b { color: #E8EDF5; font-weight: 600; }
+  .lights { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .lights span { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 6px; background: #172034; color: #6A7590; }
+  .lights span::before { content: ''; width: 7px; height: 7px; border-radius: 50%; border: 1px solid currentColor; }
+  .lights span.on { color: #E8EDF5; background: #1E2940; }
+  .lights span.on::before { background: #3FD98A; border-color: #3FD98A; }
+  #log { margin: 0; padding: 0 0 0 18px; max-height: 120px; overflow: auto; font: 11px/1.4 "Cascadia Mono", Consolas, monospace; color: #A1ACC0; }
+  #selftest { white-space: pre-wrap; font: 11px/1.4 "Cascadia Mono", Consolas, monospace; max-height: 40vh; overflow: auto; }
+  #selftest .ok { color: #3FD98A; } #selftest .bad { color: #FF4B3E; }
   @media (max-width: 760px) {
     .layout { display: block; height: auto; }
     .stage { height: 100vh; height: 100svh; }
-    aside { border-left: 0; border-top: 1px solid #1d2842; }
+    aside { box-shadow: inset 0 1px 0 #253049; }
     pre { max-height: 60vh; }
   }
 </style>
@@ -68,16 +62,19 @@
 <body>
 <div class="layout">
   <main class="stage" id="stage">
-    <div class="stage-msg"><b>ICE RIOT</b>settings panel test &middot; press <kbd>O</kbd> to open</div>
+    <canvas id="game" aria-label="Fake rink"></canvas>
+    <div class="stage-msg"><b>Settings sheet test</b>Press <kbd>O</kbd> to open. With the sheet closed, clicks and keys on the rink drive the input probe.</div>
   </main>
   <aside>
     <h2>Settings test</h2>
     <div class="tools">
-      <button type="button" id="btn-open">Open (O)</button>
+      <button type="button" id="btn-open">Open</button>
+      <button type="button" id="btn-controls">Open controls</button>
       <button type="button" id="btn-reset">store.reset()</button>
-      <button type="button" id="btn-clear">Clear storage + reload</button>
+      <button type="button" id="btn-clear">Clear storage and reload</button>
     </div>
-    <div class="probe" id="probe">keyFor(): press a key while the panel is closed</div>
+    <div class="probe" id="probe">keyFor(): press a key or click the rink while the sheet is closed</div>
+    <div class="probe" id="input-probe">input.js poll()<div class="lights" id="lights"></div></div>
     <h2>Live settings</h2>
     <pre id="json"></pre>
     <h2>subscribe() log</h2>
@@ -86,20 +83,44 @@
   </aside>
 </div>
 <script type="module">
-import { createSettings, createSettingsPanel, DEFAULTS, keyLabel, STORAGE_KEY } from './settings.js';
+import { createSettings, createSettingsPanel, DEFAULTS, keyLabel, STORAGE_KEY, MOUSE_CODES } from './settings.js';
+import { createInput } from './input.js';
+import { BTN } from '/shared/constants.js';
 
-// URL params: ?key=<storageKey> &tab=audio|video|controls|gameplay &capture=<action>:<slot>
-//             &open=0 &rebind=shoot:0:KeyK (applies one rebind through the UI) &selftest=1
+// URL params:
+//   ?key=<storageKey>  &tab=audio|video|controls|gameplay  &open=0  &full=1 (sheet over the whole page)
+//   &capture=<action>:<slot>         leave a slot capturing (e.g. pass:0)
+//   &rebind=<action>:<slot>:<code>   apply one rebind through the UI (code may be Mouse0..Mouse2)
+//   &name=<player name>  &armed=1 (arm "Reset all")  &selftest=1
 const params = new URLSearchParams(location.search);
 const storageKey = params.get('key') || STORAGE_KEY;
 const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+drawRink();
 if (params.get('selftest') === '1') await selfTest();
 
 const settings = createSettings({ storageKey });
-const panel = createSettingsPanel($('stage'), settings);
+if (params.has('name')) settings.set('name', params.get('name'));
+const panel = createSettingsPanel(params.get('full') === '1' ? document.body : $('stage'), settings);
 window.irSettings = settings;
 window.irPanel = panel;
+
+// live input probe: the rink canvas is a game surface while the sheet is closed
+const input = createInput();
+input.setKeymap((code) => settings.keyFor(code));
+const LIGHTS = [['Shoot', BTN.SHOOT], ['Pass', BTN.PASS], ['Deke', BTN.ACTION], ['Turbo', BTN.TURBO]];
+$('lights').innerHTML = LIGHTS.map(([n]) => `<span data-l="${n}">${n}</span>`).join('') + '<span data-l="move">Skate</span>';
+(function tick() {
+  input.setGameActive(!panel.isOpen());
+  input.setSuppressed(panel.isOpen());
+  const st = input.poll();
+  for (const [n, bit] of LIGHTS) document.querySelector(`[data-l="${n}"]`).classList.toggle('on', !!(st.b & bit));
+  const mv = document.querySelector('[data-l="move"]');
+  mv.classList.toggle('on', !!(st.mx || st.mz));
+  mv.textContent = st.mx || st.mz ? `Skate ${st.mx.toFixed(1)}, ${st.mz.toFixed(1)}` : 'Skate';
+  requestAnimationFrame(tick);
+})();
 
 let lastKey = null;
 function renderJson() {
@@ -118,13 +139,18 @@ settings.subscribe((key, value) => {
 });
 renderJson();
 
+function probe(code) {
+  const a = settings.keyFor(code);
+  $('probe').innerHTML = `keyFor(<b>${code || '?'}</b>) = <b>${a === null ? 'null' : `'${a}'`}</b> &middot; ${keyLabel(code)}`;
+}
 window.addEventListener('keydown', (e) => {
   if (panel.isOpen()) return;
   if (e.code === 'KeyO' && !e.repeat) { e.preventDefault(); panel.open(); return; }
-  const a = settings.keyFor(e.code);
-  $('probe').innerHTML = `keyFor(<b>${e.code || '?'}</b>) = <b>${a === null ? 'null' : `'${a}'`}</b> &middot; ${keyLabel(e.code)}`;
+  probe(e.code);
 });
+$('game').addEventListener('mousedown', (e) => { if (!panel.isOpen() && MOUSE_CODES[e.button]) probe(MOUSE_CODES[e.button]); });
 $('btn-open').addEventListener('click', () => panel.open());
+$('btn-controls').addEventListener('click', () => panel.open('controls'));
 $('btn-reset').addEventListener('click', () => settings.reset());
 $('btn-clear').addEventListener('click', () => {
   try { localStorage.removeItem(storageKey); } catch { /* blocked */ }
@@ -132,25 +158,49 @@ $('btn-clear').addEventListener('click', () => {
 });
 
 if (params.get('open') !== '0') {
-  panel.open();
-  const tab = params.get('tab');
-  if (tab) document.querySelector(`#stage .ir-set-tab[data-tab="${tab}"]`)?.click();
+  panel.open(params.get('tab') || undefined);
+  const slotEl = (a, s) => document.querySelector(`.ir-set-key[data-action="${a}"][data-slot="${s}"]`);
   const rebind = params.get('rebind');
   if (rebind) {
     const [a, s, code] = rebind.split(':');
-    document.querySelector(`#stage .ir-set-key[data-action="${a}"][data-slot="${s}"]`)?.click();
-    window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+    slotEl(a, s)?.click();
+    const m = /^Mouse(\d)$/.exec(code || '');
+    if (m) {
+      for (const type of ['mousedown', 'mouseup']) document.body.dispatchEvent(new MouseEvent(type, { button: Number(m[1]), bubbles: true, cancelable: true }));
+    } else {
+      window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true, cancelable: true }));
+    }
   }
   const cap = params.get('capture');
   if (cap) {
     const [a, s] = cap.split(':');
-    document.querySelector(`#stage .ir-set-key[data-action="${a}"][data-slot="${s}"]`)?.click();
+    slotEl(a, s)?.click();
   }
+  if (params.get('armed') === '1') document.querySelector('[data-act="reset-all"]')?.click();
+}
+
+function drawRink() {
+  const cv = $('game');
+  const paint = () => {
+    const w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = w; cv.height = h;
+    const g = cv.getContext('2d');
+    g.fillStyle = '#0A0F1C'; g.fillRect(0, 0, w, h);
+    const rw = Math.min(w - 80, (h - 80) * 2), rh = rw / 2, x = (w - rw) / 2, y = (h - rh) / 2 + 20;
+    g.fillStyle = '#DCEAF6'; g.globalAlpha = 0.12;
+    g.beginPath(); g.roundRect(x, y, rw, rh, rh * 0.28); g.fill();
+    g.globalAlpha = 0.5; g.lineWidth = 2;
+    g.strokeStyle = '#FF4B3E'; g.beginPath(); g.moveTo(w / 2, y); g.lineTo(w / 2, y + rh); g.stroke();
+    g.strokeStyle = '#7CC4FF'; for (const f of [0.35, 0.65]) { g.beginPath(); g.moveTo(x + rw * f, y); g.lineTo(x + rw * f, y + rh); g.stroke(); }
+    g.globalAlpha = 1;
+  };
+  paint();
+  addEventListener('resize', paint);
 }
 
 // ---------------------------------------------------------------------------------------------
-// In-browser panel checks (drive the real DOM). Results go to #selftest and document.title so a
-// headless run with --dump-dom can read them.
+// In-browser checks (drive the real DOM). Results go to #selftest and document.title so a
+// headless run can read them.
 async function selfTest() {
   const out = $('selftest');
   out.hidden = false;
@@ -163,7 +213,12 @@ async function selfTest() {
   const p = createSettingsPanel(box, store);
   const q = (sel) => box.querySelector(sel);
   const key = (code, target = document.activeElement || window, type = 'keydown') => {
-    const ev = new KeyboardEvent(type, { code, key: code === 'Escape' ? 'Escape' : code, bubbles: true, cancelable: true });
+    const ev = new KeyboardEvent(type, { code, key: code, bubbles: true, cancelable: true });
+    target.dispatchEvent(ev);
+    return ev;
+  };
+  const mouse = (type, button, target) => {
+    const ev = new MouseEvent(type, { button, bubbles: true, cancelable: true });
     target.dispatchEvent(ev);
     return ev;
   };
@@ -176,106 +231,268 @@ async function selfTest() {
   check('style injected once', document.querySelectorAll('#ir-set-style').length === 1);
   check('starts closed', !p.isOpen() && q('.ir-set-overlay').hidden);
   p.open();
-  check('open() opens', p.isOpen() && !q('.ir-set-overlay').hidden);
-  check('focus moved into dialog', q('.ir-set-dialog').contains(document.activeElement));
+  check('open() opens', p.isOpen() && !q('.ir-set-overlay').hidden && q('.ir-set-overlay').classList.contains('is-open'));
+  check('focus moved into the sheet', q('.ir-set-dialog').contains(document.activeElement));
   check('ir-settings open event', events[0] === true);
   check('four tabs', box.querySelectorAll('[role=tab]').length === 4);
+  check('header: Settings, Esc chip, close button', q('.ir-set-title').textContent === 'Settings' && q('.ir-set-esc').textContent === 'Esc' && !!q('.ir-set-x svg'));
+  await sleep(600);
+  const r = q('.ir-set-dialog').getBoundingClientRect();
+  check(`sheet is 600px wide at the right edge, full height (${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)})`,
+    Math.round(r.width) === 600 && Math.round(r.right) === 800 && Math.round(r.height) === 600);
+  check('no native select anywhere', !box.querySelector('select'));
 
-  // audio controls
+  // audio
   const sfx = q('[data-key="sfxVolume"] input');
   sfx.value = '33'; sfx.dispatchEvent(new Event('input', { bubbles: true }));
   check('slider writes settings', store.get('sfxVolume') === 0.33);
-  check('slider label updates', q('[data-key="sfxVolume"] output').textContent === '33%');
+  check('slider value label updates', q('[data-key="sfxVolume"] output').textContent === '33%');
   store.set('musicVolume', 0.12);
   check('external set() syncs slider', q('[data-key="musicVolume"] input').value === '12');
-  q('[data-key="muted"] input').click();
-  check('mute switch toggles', store.get('muted') === true);
-  check('muted dims audio rows', q('[data-key="sfxVolume"]').classList.contains('is-dim'));
+  const ann = q('[data-key="announcerVolume"] input');
+  check('announcer slider shows 90%', ann && ann.value === '90' && q('[data-key="announcerVolume"] output').textContent === '90%');
+  ann.value = '50'; ann.dispatchEvent(new Event('input', { bubbles: true }));
+  check('announcer slider writes announcerVolume', store.get('announcerVolume') === 0.5);
+  const mute = q('[data-key="muted"] [role="switch"]');
+  mute.click();
+  check('mute switch toggles', store.get('muted') === true && mute.getAttribute('aria-checked') === 'true');
+  check('muted dims the volume rows', ['sfxVolume', 'musicVolume', 'announcerVolume'].every((k) => q(`[data-key="${k}"]`).classList.contains('is-dim')));
+  q('[data-key="muted"] label').click();
+  check('clicking the label toggles too', store.get('muted') === false);
+  key('KeyM', q('[data-tab="audio"]'));
+  check('M toggles mute while the sheet is open', store.get('muted') === true);
+  key('KeyM', q('[data-tab="audio"]'));
+  check('M toggles it back', store.get('muted') === false);
+  check('M did not reach the game', !gameSaw.includes('KeyM'));
 
   // video
   q('[data-tab="video"]').click();
   check('video tab shown', !q('[data-pane="video"]').hidden && q('[data-pane="audio"]').hidden);
-  q('[data-key="quality"] input[value="low"]').click();
-  check('quality radio', store.get('quality') === 'low');
-  q('[data-key="reduceFlashes"] input').click();
+  q('[data-key="quality"] [data-value="low"]').click();
+  check('quality segmented control', store.get('quality') === 'low' && q('[data-key="quality"] [data-value="low"]').getAttribute('aria-checked') === 'true');
+  key('ArrowLeft', q('[data-key="quality"] [data-value="low"]'));
+  check('arrow keys move the quality selection', store.get('quality') === 'medium' && document.activeElement === q('[data-key="quality"] [data-value="medium"]'));
+  q('[data-key="reduceFlashes"] [role="switch"]').click();
   check('reduce flashes -> calm class', store.get('reduceFlashes') && q('.ir-set-overlay').classList.contains('ir-set-calm'));
+  q('[data-key="showNames"] [role="switch"]').click();
+  check('name tags toggle', store.get('showNames') === false);
+  check('camera shake slider at 100%', q('[data-key="cameraShake"] output').textContent === '100%');
 
   // tab keyboard nav
   q('[data-tab="video"]').focus();
   key('ArrowRight', q('[data-tab="video"]'));
-  check('ArrowRight moves to controls tab', !q('[data-pane="controls"]').hidden && document.activeElement === q('[data-tab="controls"]'));
+  check('ArrowRight moves to the controls tab', !q('[data-pane="controls"]').hidden && document.activeElement === q('[data-tab="controls"]'));
 
-  // rebinding
+  // controls: layout
   const slot = (a, s) => q(`.ir-set-key[data-action="${a}"][data-slot="${s}"]`);
+  const msg = () => q('.ir-set-status-msg').textContent;
+  const tone = () => q('.ir-set-status').dataset.tone;
+  check('skate row: W A S D then arrows', [...q('[data-row="skate"]').querySelectorAll('.ir-set-key')].map((b) => b.textContent).join(' ') === 'W A S D ↑ ← ↓ →');
+  check('shoot: Left click / Space', slot('shoot', 0).textContent === 'Left click' && slot('shoot', 1).textContent === 'Space');
+  check('pass: Right click / K', slot('pass', 0).textContent === 'Right click' && slot('pass', 1).textContent === 'K');
+  check('deke: L / empty', slot('action', 0).textContent === 'L' && slot('action', 1).classList.contains('is-empty'));
+  check('turbo: L-Shift / R-Shift', slot('turbo', 0).textContent === 'L-Shift' && slot('turbo', 1).textContent === 'R-Shift');
+  check('gamepad list has six fixed entries', box.querySelectorAll('.ir-set-pad li').length === 6);
+  check('status row idle', tone() === 'idle');
+
+  // rebinding with keys
   slot('shoot', 0).click();
-  check('slot enters capture', slot('shoot', 0).classList.contains('is-capturing') && /PRESS A KEY/.test(slot('shoot', 0).textContent));
+  check('slot enters capture', slot('shoot', 0).classList.contains('is-capturing') && slot('shoot', 0).textContent === 'Press a key or click');
+  check('status asks for a key or click', msg() === 'Press a key or click for shoot · check' && q('.ir-set-status-aside').textContent === 'Esc cancels · Backspace clears' && tone() === 'capture');
   gameSaw = [];
-  const ev = key('KeyK', slot('shoot', 0));
-  check('captured key bound', store.get('keys').shoot[0] === 'KeyK');
-  check('conflict swapped', store.get('keys').pass[0] === 'KeyJ');
-  check('slot labels updated', slot('shoot', 0).textContent === 'K' && slot('pass', 0).textContent === 'J');
+  let ev = key('KeyJ', slot('shoot', 0));
+  check('captured key bound', store.get('keys').shoot[0] === 'KeyJ' && slot('shoot', 0).textContent === 'J');
   check('capture swallowed the key (game never saw it)', gameSaw.length === 0 && ev.defaultPrevented);
-  check('status mentions swap', /swapped/i.test(q('.ir-set-status').textContent));
+  check('status: bound, with a check glyph', /^Bound J to shoot/.test(msg()) && tone() === 'ok' && !!q('.ir-set-status .ir-set-ico svg'));
+  key('KeyJ', window, 'keyup');
+  slot('shoot', 0).click();
+  key('KeyK', slot('shoot', 0));
+  check('conflict swaps', store.get('keys').shoot[0] === 'KeyK' && store.get('keys').pass[1] === 'KeyJ');
+  check('status says what moved', msg() === 'Bound K to shoot · check and moved J to pass · switch');
   check('keyFor follows', store.keyFor('KeyK') === 'shoot' && store.keyFor('KeyJ') === 'pass');
   key('KeyK', window, 'keyup');
 
+  // rebinding with the mouse
+  slot('pass', 1).click();
+  check('the click that starts capture binds nothing', store.get('keys').pass[1] === 'KeyJ' && slot('pass', 1).classList.contains('is-capturing'));
+  const md = mouse('mousedown', 1, q('.ir-set-body'));
+  check('middle click binds Mouse1', store.get('keys').pass[1] === 'Mouse1' && md.defaultPrevented);
+  check('slot reads Middle click', slot('pass', 1).textContent === 'Middle click');
+  mouse('mouseup', 1, q('.ir-set-body'));
+  check('the binding auxclick is eaten', mouse('auxclick', 1, q('.ir-set-body')).defaultPrevented);
+  mouse('mousedown', 0, document.body); mouse('mouseup', 0, document.body);   // the user's next real click
+  slot('turbo', 1).click();
+  const cm = new MouseEvent('contextmenu', { button: 2, bubbles: true, cancelable: true });
+  slot('turbo', 1).dispatchEvent(cm);
+  check('no context menu while capturing', cm.defaultPrevented && p.isOpen());
+  const done = q('[data-act="done"]');
+  mouse('mousedown', 2, done);
+  check('right click binds Mouse2, swapped off pass', store.get('keys').turbo[1] === 'Mouse2' && store.get('keys').pass[0] === 'ShiftRight');
+  mouse('mouseup', 2, done);
+  const cm2 = new MouseEvent('contextmenu', { button: 2, bubbles: true, cancelable: true });
+  done.dispatchEvent(cm2);
+  check('context menu after the binding right click is blocked', cm2.defaultPrevented);
+  done.click();
+  check('click after a binding mousedown does not press Done', p.isOpen());
+  mouse('mousedown', 0, document.body); mouse('mouseup', 0, document.body);   // an ordinary click ends the eat window
+  slot('up', 1).click();
+  mouse('mousedown', 0, q('.ir-set-body'));
+  check('skate slot shows a mouse glyph for left click', store.get('keys').up[1] === 'Mouse0' && !!slot('up', 1).querySelector('svg') && /Left click/.test(slot('up', 1).getAttribute('aria-label')));
+  mouse('mouseup', 0, q('.ir-set-body'));
+  mouse('mousedown', 0, document.body); mouse('mouseup', 0, document.body);
+
+  // cancel / clear / unbound
   slot('turbo', 1).click();
   key('Escape', slot('turbo', 1));
-  check('Esc cancels capture, panel stays open', p.isOpen() && !slot('turbo', 1).classList.contains('is-capturing'));
-  check('Esc during capture left bindings alone', store.get('keys').turbo[1] === 'ShiftRight');
-
+  check('Esc cancels capture, sheet stays open', p.isOpen() && !slot('turbo', 1).classList.contains('is-capturing') && store.get('keys').turbo[1] === 'Mouse2');
+  check('cancel message', msg() === 'Rebind cancelled');
   slot('turbo', 1).click();
   key('Backspace', slot('turbo', 1));
-  check('Backspace clears slot', store.get('keys').turbo.length === 1 && slot('turbo', 1).classList.contains('is-empty'));
+  check('Backspace clears the slot', store.get('keys').turbo.length === 1 && slot('turbo', 1).classList.contains('is-empty') && slot('turbo', 1).textContent === '—');
+  check('clear message', msg() === 'Cleared right click from turbo');
+  slot('turbo', 1).click();
+  key('KeyL', slot('turbo', 1));
+  check('stealing the only key leaves the action unbound and flagged',
+    store.get('keys').action.length === 0 && q('[data-row="action"] .ir-set-keyname').classList.contains('is-unbound')
+    && tone() === 'warn' && /Deke · poke has no key now$/.test(msg()));
+  check('unbound row shows a glyph and a word', getComputedStyle(q('[data-row="action"] .ir-set-keyname-w')).display !== 'none' && /Not bound/.test(q('[data-row="action"] .ir-set-keyname-w').textContent));
+  slot('down', 0).click();
+  key('Backspace', slot('down', 0));
+  slot('down', 0).click();
+  key('Backspace', slot('down', 0));
+  check('skate shows which direction is unbound', /Not bound: down/.test(q('[data-row="skate"] .ir-set-keyname-w').textContent) && q('[data-row="skate"] .ir-set-keyname').classList.contains('is-unbound'));
 
-  slot('pass', 0).click();
-  key('Space', slot('pass', 0));         // pass [J] <- Space (shoot alt) : shoot gets J
-  check('swap onto alternate', store.get('keys').pass[0] === 'Space' && store.get('keys').shoot[1] === 'KeyJ');
-
-  slot('action', 1).click();
-  key('Space', slot('action', 1));       // steals pass's only key -> pass unbound
-  check('unbound action flagged', store.get('keys').pass.length === 0 && q(`#${q('.ir-set-keyname.is-unbound')?.id || 'none'}`) !== null);
-
-  q('[data-act="reset-keys"]').click();
-  check('reset controls', JSON.stringify(store.get('keys')) === JSON.stringify(DEFAULTS.keys));
-
-  // keys typed while the panel is open (not capturing) never reach the game
+  // clicks are eaten while capturing; game keys blocked while open
+  slot('shoot', 1).click();
+  q('[data-tab="gameplay"]').click();
+  check('clicks are eaten while capturing', !q('[data-pane="controls"]').hidden);
+  key('Escape', slot('shoot', 1));
   gameSaw = [];
   key('KeyW', q('[data-tab="controls"]'));
-  check('panel blocks game keys while open', gameSaw.length === 0);
+  check('the sheet blocks game keys while open', gameSaw.length === 0);
 
-  // gameplay: name field
+  // gameplay: tutorial + name
   q('[data-tab="gameplay"]').click();
+  check('gameplay tab shown', !q('[data-pane="gameplay"]').hidden);
+  q('[data-key="showTutorial"] [role="switch"]').click();
+  check('tutorial hints toggle', store.get('showTutorial') === false);
   const name = q('[data-key="name"] input');
   name.focus(); name.value = ' Big  Al '; name.dispatchEvent(new Event('input', { bubbles: true }));
   check('name sanitized into store', store.get('name') === 'Big Al');
   check('typing not rewritten while focused', name.value === ' Big  Al ');
+  check('counter counts', q('[data-key="name"] .ir-set-count').textContent === '9/16');
+  key('KeyM', name);
+  check('M in the name field types instead of muting', store.get('muted') === false);
   name.dispatchEvent(new Event('change', { bubbles: true }));
-  check('name normalized on change', name.value === 'Big Al');
+  check('name normalized on change', name.value === 'Big Al' && q('[data-key="name"] .ir-set-count').textContent === '6/16');
 
   // reset all (two-step)
-  q('[data-act="reset-all"]').click();
-  check('reset all asks to confirm first', store.get('quality') === 'low');
-  q('[data-act="reset-all"]').click();
-  check('reset all restores defaults but keeps name', store.get('quality') === 'auto' && store.get('muted') === false && store.get('name') === 'Big Al');
+  const resetBtn = q('[data-act="reset-all"]');
+  resetBtn.click();
+  check('reset all arms first', store.get('quality') === 'medium' && resetBtn.textContent === 'Confirm reset' && resetBtn.classList.contains('is-armed'));
+  check('armed note: your name is kept', q('.ir-set-foot-note').textContent === 'Your name is kept');
+  resetBtn.click();
+  check('reset all restores defaults but keeps the name', store.get('quality') === 'auto' && store.get('muted') === false && store.get('name') === 'Big Al'
+    && JSON.stringify(store.get('keys')) === JSON.stringify(DEFAULTS.keys) && store.get('showTutorial') === true);
+  check('reset confirmation with a glyph', /Settings reset/.test(q('.ir-set-foot-note').textContent) && !!q('.ir-set-foot-note svg') && resetBtn.textContent === 'Reset all');
+  resetBtn.click();
+  await sleep(3700);
+  check('disarms after 3.5 s', resetBtn.textContent === 'Reset all' && !resetBtn.classList.contains('is-armed') && store.get('quality') === 'auto');
 
-  // Esc closes
-  key('Escape', q('[data-tab="gameplay"]'));
-  check('Esc closes', !p.isOpen() && q('.ir-set-overlay').hidden);
+  // open(tab), Esc, Done, scrim
+  p.open('audio');
+  check('open(tab) while open switches tab', !q('[data-pane="audio"]').hidden);
+  key('Escape', q('[data-tab="audio"]'));
+  check('Esc closes', !p.isOpen());
   check('ir-settings close event', events[events.length - 1] === false);
+  await sleep(220);
+  check('hidden after the exit motion', q('.ir-set-overlay').hidden);
   p.open();
-  check('re-open remembers tab', !q('[data-pane="gameplay"]').hidden);
+  check('re-open remembers the tab', !q('[data-pane="audio"]').hidden);
+  p.close();
+  p.open('controls');
+  check('open(tab) picks the tab', !q('[data-pane="controls"]').hidden);
   q('[data-act="done"]').click();
   check('Done closes', !p.isOpen());
+  p.open('gameplay');
+  q('.ir-set-scrim').click();
+  check('clicking the scrim closes', !p.isOpen());
+  await sleep(220);
 
   p.dispose();
-  check('dispose removes overlay', !box.querySelector('.ir-set-overlay'));
-  check('dispose removes style', !document.getElementById('ir-set-style'));
+  check('dispose removes the overlay', !box.querySelector('.ir-set-overlay'));
+  check('dispose removes the style', !document.getElementById('ir-set-style'));
   store.set('sfxVolume', 0.5);   // must not throw after dispose
   window.removeEventListener('keydown', gameListener);
   box.remove();
 
-  const bad = results.filter((r) => !r[1]);
+  // ------------------------------------------------------------------ input.js: mouse buttons
+  const keys = createSettings({ storage: null });
+  const inp = createInput();
+  inp.setKeymap((c) => keys.keyFor(c));
+  inp.setGameActive(true);
+  const cv = $('game');
+  const has = (bit) => !!(inp.poll().b & bit);
+  mouse('mousedown', 0, cv);
+  check('input: left click on the canvas = shoot', has(BTN.SHOOT));
+  check('input: held while the button is down', has(BTN.SHOOT));
+  mouse('mouseup', 0, document.body);
+  check('input: released by a mouseup anywhere', !has(BTN.SHOOT));
+  mouse('mousedown', 2, cv); mouse('mouseup', 2, cv);
+  check('input: a quick right click is latched as pass', has(BTN.PASS));
+  check('input: and then released', !has(BTN.PASS));
+  const cmGame = new MouseEvent('contextmenu', { button: 2, bubbles: true, cancelable: true });
+  cv.dispatchEvent(cmGame);
+  check('input: no context menu over the game', cmGame.defaultPrevented);
+  const mid = mouse('mousedown', 1, cv);
+  check('input: unbound middle click does nothing', !inp.poll().b && !mid.defaultPrevented);
+  mouse('mouseup', 1, cv);
+  const ui = document.createElement('div');
+  ui.id = 'ui';
+  ui.innerHTML = '<div class="menu"><span>menu</span></div><button type="button">b</button><div data-act="x">x</div>';
+  document.body.append(ui);
+  mouse('mousedown', 0, ui); mouse('mouseup', 0, ui);
+  check('input: the bare #ui overlay counts as the game', has(BTN.SHOOT));
+  for (const el of [ui.querySelector('.menu span'), ui.querySelector('button'), ui.querySelector('[data-act]'), document.body]) {
+    const e2 = mouse('mousedown', 0, el); mouse('mouseup', 0, el);
+    check(`input: ignores clicks on ${el.tagName.toLowerCase()}${el.className ? '.' + el.className : ''}`, !has(BTN.SHOOT) && !e2.defaultPrevented);
+  }
+  const cmUi = new MouseEvent('contextmenu', { button: 2, bubbles: true, cancelable: true });
+  ui.querySelector('button').dispatchEvent(cmUi);
+  check('input: context menu still works on UI', !cmUi.defaultPrevented);
+  ui.remove();
+  inp.setGameActive(false);
+  mouse('mousedown', 0, cv); mouse('mouseup', 0, cv);
+  const cmOff = new MouseEvent('contextmenu', { button: 2, bubbles: true, cancelable: true });
+  cv.dispatchEvent(cmOff);
+  check('input: nothing while no game is active', !has(BTN.SHOOT) && !cmOff.defaultPrevented);
+  inp.setGameActive(true);
+  inp.setSuppressed(true);
+  mouse('mousedown', 0, cv); mouse('mouseup', 0, cv);
+  check('input: nothing while suppressed', !has(BTN.SHOOT));
+  inp.setSuppressed(false);
+  key('Space', cv);
+  check('input: keyboard unchanged (Space = shoot)', has(BTN.SHOOT));
+  key('Space', cv, 'keyup');
+  key('KeyJ', cv);
+  check('input: J is no longer a default', !inp.poll().b);
+  key('KeyJ', cv, 'keyup');
+  mouse('mousedown', 0, cv);
+  inp.poll();
+  cv.dispatchEvent(new MouseEvent('mousemove', { buttons: 0, bubbles: true }));
+  check('input: a release outside the window is noticed on mousemove', !has(BTN.SHOOT));
+  mouse('mousedown', 0, cv);
+  window.dispatchEvent(new Event('blur'));
+  check('input: blur releases and drops the latch', !has(BTN.SHOOT));
+  keys.set('keys', { action: ['Mouse1'] });
+  mouse('mousedown', 1, cv); mouse('mouseup', 1, cv);
+  check('input: rebound middle click = deke', has(BTN.ACTION));
+  cv.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true }));
+  mouse('mousedown', 0, cv); mouse('mouseup', 0, cv);
+  check('input: mouse events that follow a touch are ignored', !has(BTN.SHOOT));
+  inp.dispose();
+
+  const bad = results.filter((x) => !x[1]);
   out.innerHTML = results.map(([n, ok]) => `<div class="${ok ? 'ok' : 'bad'}">${ok ? 'PASS' : 'FAIL'} ${n}</div>`).join('');
   document.title = `SELFTEST ${bad.length ? 'FAIL' : 'PASS'} ${results.length - bad.length}/${results.length}` +
     (bad.length ? ` :: ${bad.map((b) => b[0]).join(' | ')}` : '');

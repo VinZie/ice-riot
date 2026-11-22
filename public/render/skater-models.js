@@ -270,6 +270,8 @@ export function createSkaterModels(group, mirror, track, skinTones) {
     r.inited = false;
   };
   api.hideAll = () => { for (const id of rigs.keys()) api.hide(id); };
+  /** Skip drawing skater `id` this frame only (a camera inside him); the next update() shows him again. */
+  api.cull = (id) => { const r = rigs.get(id); if (r) r.root.visible = false; };
   api.setTeams = (h, a) => { teams = [h, a]; for (const r of rigs.values()) paint(r); };
   api.setReflections = (on) => { reflections = !!on; };
   /** Snapshot events that pick clips: 'pass' {by}, 'shot' {by, kind}. */
